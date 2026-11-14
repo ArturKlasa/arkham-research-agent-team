@@ -1,0 +1,122 @@
+"""Validation rules: what each step's output must satisfy.
+
+Two kinds, declared in one table:
+
+- checked  rules with a `check` function. They are deterministic, cost nothing,
+           and run twice: as a gate when an agent submits (a violation bounces
+           the submission back to the agent), and again in the audit sweep.
+- judged   rules without a `check`. They need judgement, so the auditor agent
+           decides them during the sweep and must give evidence.
+
+A check receives (result, task, engine) and returns a list of problems.
+"""
+
+from __future__ import annotations
+
+import ast
+import posixpath
+import re
+from dataclasses import dataclass
+from typing import Callable
+
+
+@dataclass(frozen=True)
+class Rule:
+    id: str
+    step: str  # the task kind it applies to
+    text: str
+    check: Callable | None = None
+
+
+def _same_source(name: str) -> str:
+    return name.split("#")[0].rstrip("/")
+
+
+def _grounded(result, task, eng):
+    opened = {_same_source(name) for name in task.meta.get("consulted", [])}
+    cited = [f["source"] for f in result["findings"]] if "findings" in result else result["sources"]
+    return [f"source {s!r} is cited but was never opened during this task; cite only what you actually read" for s in cited if _same_source(s) not in opened]
+
+
+def _requirement_ids(result, task, eng):
+    ids = [r["id"] for r in result["requirements"]]
+    problems = [f"requirement id {i!r} must look like R1, R2, ..." for i in ids if not re.fullmatch(r"R\d+", i)]
+    return problems + [f"requirement id {i!r} is used more than once" for i in sorted({i for i in ids if ids.count(i) > 1})]
+
+
+def _traceable(result, task, eng):
+    required = {r["id"] for r in eng.board.tasks["prd"].result["requirements"]}
+    covered = {r for item in result["work_items"] for r in item["covers"]}
+    problems = [f"requirement {r} is not covered by any work item" for r in sorted(required - covered)]
+    return problems + [f"work items cover {r}, which is not a requirement in the PRD" for r in sorted(covered - required)]
+
+
+def _buildable(result, task, eng):
+    ids = [item["id"] for item in result["work_items"]]
+    problems = [f"work item id {i!r} is used more than once" for i in sorted({i for i in ids if ids.count(i) > 1})]
+    waiting = {item["id"]: set(item["depends_on"]) for item in result["work_items"]}
+    problems += [f"{i} depends on unknown work item {d!r}" for i, deps in waiting.items() for d in sorted(deps - set(ids))]
+    while waiting and not problems:  # peel off items whose dependencies are all built; a remainder is a cycle
+        free = [i for i, deps in waiting.items() if not deps & waiting.keys()]
+        if not free:
+            problems.append(f"dependency cycle among work items {sorted(waiting)}")
+        for i in free:
+            del waiting[i]
+    return problems
+
+
+def _file_ownership(result, task, eng):
+    files = [f for item in result["work_items"] for f in item["files"]]
+    outside = [f for f in files if f.startswith(("/", "sources/")) or ".." in f.split("/")]
+    problems = [f"file path {f!r} must be relative and inside the workspace" for f in outside]
+    problems += [f"file path {f!r} must be written plainly, like pkg/module.py" for f in files if f not in outside and posixpath.normpath(f) != f]
+    problems += [f"file {f!r} is owned by more than one work item" for f in sorted({f for f in files if files.count(f) > 1})]
+    if not any("test" in f.rsplit("/", 1)[-1] for f in files):
+        problems.append("no work item owns a test file")
+    return problems
+
+
+def _files_written(result, task, eng):
+    problems = []
+    for name in task.meta["item"]["files"]:
+        path = eng.ws.root / name
+        if not path.is_file() or not path.read_text(errors="replace").strip():
+            problems.append(f"{name} is listed in the work item but is missing or empty")
+        elif name.endswith(".py"):
+            source = path.read_text(errors="replace")
+            try:
+                ast.parse(source)  # parses without executing anything
+            except SyntaxError as exc:
+                problems.append(f"{name} has a syntax error on line {exc.lineno}: {exc.msg}")
+            if re.search(r"raise NotImplementedError|\bTODO\b|\bFIXME\b", source):
+                problems.append(f"{name} still contains placeholder code (TODO / NotImplementedError)")
+    return problems
+
+
+RULES = [
+    Rule("RES-GROUNDED", "research", "Every cited source was actually opened by the researcher during the task.", _grounded),
+    Rule("RES-RELEVANT", "research", "The brief covers what is needed to build the task, and unknowns are listed as open questions rather than guessed."),
+    Rule("PLAN-MVP", "plan", "The plan is a minimum viable scope for the task: in-scope items are necessary, non-goals are explicit, and it does not contradict the research brief."),
+    Rule("PRD-IDS", "prd", "Requirement ids are unique and of the form R<number>.", _requirement_ids),
+    Rule("PRD-COVERAGE", "prd", "The requirements cover everything the plan puts in scope for the user's task, and add nothing the plan leaves out."),
+    Rule("PRD-TESTABLE", "prd", "Every acceptance criterion can be verified objectively by a test."),
+    Rule("SPEC-TRACE", "spec", "Every PRD requirement is covered by a work item, and work items cover only PRD requirements.", _traceable),
+    Rule("SPEC-DAG", "spec", "Work item ids are unique and their dependencies exist and form no cycle.", _buildable),
+    Rule("SPEC-FILES", "spec", "File paths are relative, each file is owned by exactly one work item, and the spec includes tests.", _file_ownership),
+    Rule("SPEC-DESIGN", "spec", "The design is sufficient to meet every requirement's acceptance criterion, and interfaces between work items are precise enough to build them separately."),
+    Rule("IMPL-FILES", "implement", "Every file of the work item exists, parses, and contains no placeholder code.", _files_written),
+    Rule("IMPL-SPEC", "implement", "The code implements the work item as the spec describes and meets the acceptance criteria of the requirements it covers."),
+    Rule("ANS-GROUNDED", "adhoc", "Every source cited in an answer was actually opened while answering.", _grounded),
+]
+
+# Checked once per sweep over the whole workspace rather than per task; see auditor.run_suite.
+SUITE = Rule("IMPL-TESTS", "implement", "The spec's test command passes in the sandbox.")
+
+
+def violations(result: dict, task, eng) -> list[tuple[Rule, str]]:
+    """Run every checked rule for the task's step. Returns (rule, problem) pairs."""
+    return [(rule, problem) for rule in RULES if rule.step == task.kind and rule.check for problem in rule.check(result, task, eng)]
+
+
+def judged(kind: str) -> list[Rule]:
+    return [rule for rule in RULES if rule.step == kind and rule.check is None]
