@@ -1,0 +1,17 @@
+[project]
+name = "research-agent-team"
+version = "0.1.0"
+description = "A hand-built multi-agent harness: Planning -> PRD -> Spec -> Implementation, audited and re-run."
+requires-python = ">=3.10"
+# Only the Claude provider needs a dependency; the OpenAI-compatible and scripted providers are standard library.
+dependencies = ["anthropic>=2.8"]
+
+[project.scripts]
+harness = "harness.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["harness"]
