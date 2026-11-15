@@ -1,0 +1,232 @@
+# Research Agent Team
+
+A multi-agent harness that takes a medium-size task ("build an API for consulting a mock database", "build an MCP server for an Obsidian vault") through **Research → Planning → PRD → Spec → Implementation → Audit** and leaves a working, tested minimum viable solution in a workspace.
+
+The orchestration is written from scratch in about 2,200 lines of Python: delegation, task tracking, validation, auditing, re-running, memory, hooks and sandboxing. The only thing left to a library is the connection to the model (the Anthropic SDK for Claude; plain `urllib` for any OpenAI-compatible server such as Ollama).
+
+## Quick start
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e .      # or: uv venv && uv pip install -e .
+
+# 1. Claude (default)
+export ANTHROPIC_API_KEY=...
+.venv/bin/python -m harness
+
+# 2. An open-source model running locally (no dependency, no key)
+ollama pull qwen2.5-coder:14b
+python3 -m harness --provider openai --model qwen2.5-coder:14b      # --base-url defaults to Ollama
+
+# 3. No model at all: a scripted team that makes every kind of mistake on purpose
+python3 -m harness --provider scripted
+```
+
+Then type what you want built. Other entry points and options:
+
+```bash
+python3 -m harness --serve                       # web UI + HTTP gateway on http://localhost:8765
+python3 -m harness --serve --host 0.0.0.0        # reachable from other machines (token required)
+python3 -m harness --sources ./docs              # give the agents reference files to research
+python3 -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
+python3 -m harness --hooks examples/hooks.py     # load policy hooks
+python3 -m unittest discover -s tests -v         # 26 tests, offline, about 6 seconds
+```
+
+Requirements: Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
+
+## What a session looks like
+
+```text
+> Build an API for consulting a mock user database
+▶ research · researcher (attempt 1)
+    ✖ submission rejected: [RES-GROUNDED] source 'https://example.com/never-opened' is cited but was never opened…
+✔ research done in 0.0s
+▶ plan · planner (attempt 1)
+✖ plan failed: RuntimeError: simulated crash inside the planner — will retry
+▶ plan · planner (attempt 2)
+✔ plan done in 0.0s
+…
+⚖ audit: 1 finding(s)
+    ✖ [IMPL-TESTS] impl:W1: `python3 -m unittest -v` exited with code 1: … test_found (test_db.GetUser) ... FAIL
+↺ re-running impl:W1 (audit cycle 1)
+…
+⚖ audit: all rules pass
+Status: completed. 7/7 tasks done, 2 audit re-run round(s). Files: api.py, db.py, test_api.py, test_db.py in runs/…/workspace.
+
+> /show api.py                                  see what was implemented
+> change impl:W2 return the id in the 404 body  ask for changes (free text with a real model)
+> /status                                       the task board
+```
+
+(The transcript is from `--provider scripted`; with a real model the orchestrator's replies are free text.)
+
+Slash commands are answered by the harness directly, without the model:
+
+| Command | Shows |
+|---|---|
+| `/status` | the task board: every task, its state, runs, seconds, tokens, last error |
+| `/show [name]` | artifacts and workspace files (`/show artifacts/prd`, `/show api.py`) |
+| `/trail [agent or task]` | the log trail (`/trail engineer`, `/trail impl:W1`) |
+| `/errors` | every recorded error with its Python traceback |
+| `/memory` | lessons and notes carried across sessions |
+
+## Architecture
+
+```mermaid
+flowchart TD
+    U([User: terminal or web UI]) <-->|"streamed text + live progress"| O[Orchestrator agent]
+    O -->|"start_project · request_changes · resume · ask_expert · approve"| E[Engine]
+    E <-->|"next ready task / outcome"| B[(Task board<br/>board.json)]
+    E -->|"handoff: assignment, upstream results,<br/>feedback, lessons from memory"| X[Expert agent loop]
+    X <-->|tool calls| T[Tools<br/>files · web · sandboxed commands · ask_researcher]
+    X -->|submit| G{Gate<br/>schema + checked rules}
+    G -->|"rejected: problems go back to the agent"| X
+    G -->|accepted| B
+    B -->|all steps done| A[Auditor sweep<br/>checked rules → test suite → judged rules]
+    A -->|"findings: blamed task + downstream re-opened"| B
+    A -->|clean, or budget used up| R([Report to user])
+    X -. every event .-> L[(Event bus → trail.jsonl → hooks)]
+    E -. every event .-> L
+    A -. lessons .-> M[(Memory)]
+    M -. recalled into handoffs .-> E
+```
+
+The team:
+
+| Agent | Step | Hands over | Tools |
+|---|---|---|---|
+| **Orchestrator** | talks to the user, streams | — | the engine's entry points |
+| **Researcher** | `research` | summary, findings each with a source, open questions | read files, web search, web fetch |
+| **Planner** | `plan` | goal, in scope, out of scope, milestones, risks, assumptions | read files, ask researcher |
+| **Product** | `prd` | requirements `R1…` each with an acceptance criterion | read files, ask researcher |
+| **Architect** | `spec` | design, work items `W1…` (files, requirements covered, dependencies), test command | read files, ask researcher |
+| **Engineer** | `impl:W1…` one per work item | the files, written to the workspace | read, write own files, run sandboxed commands, ask researcher |
+| **Auditor** | `audit` | a verdict with evidence per rule | read files |
+
+Modules, in reading order:
+
+| File | Responsibility |
+|---|---|
+| `harness/engine.py` | the workflow: scheduling, delegation, retries, acting on the audit, reports |
+| `harness/board.py` | task tracking: states, dependencies, invalidation, persistence |
+| `harness/agent.py` | the agent loop every agent runs: tool calls, submission gate, error containment |
+| `harness/rules.py` | the validation rules |
+| `harness/auditor.py` | the audit sweep and the auditor agent |
+| `harness/experts.py` | the experts as data: prompt, tools, inputs, submission schema |
+| `harness/orchestrator.py` | the user-facing streaming agent and the slash commands |
+| `harness/tools.py` | file, web and command tools; workspace confinement; sandbox |
+| `harness/events.py` | event bus: trail, tracebacks, live progress, hooks |
+| `harness/memory.py` | lessons and notes across sessions |
+| `harness/llm.py` | the model connection: Claude, OpenAI-compatible, retry and error classification |
+| `harness/server.py` | HTTP gateway and web UI |
+| `harness/demo.py` | the scripted team used by `--provider scripted` and the tests |
+
+## How the harness delegates, tracks, validates and re-runs
+
+**The pipeline is code, not a prompt.** The model never decides what step comes next. The engine runs one loop: take the next ready task from the board, hand it to its expert, record the outcome.
+
+**Delegation is a handoff with a contract.** An expert receives exactly what it needs: the task, its assignment, the structured results of the upstream steps it depends on, its own previous submission and the feedback on it if this is a re-run, and what memory holds for its role. It must finish by calling `submit` with a payload matching its schema. That payload is what the next agent receives, so agents communicate through validated structure rather than free text. Experts can also delegate sideways: `ask_researcher` runs the researcher as a tracked sub-task.
+
+**Everything is a task on the board.** Pipeline steps, one engineer task per work item (created from the spec, ordered by the work items' dependencies), the audit, and ad-hoc questions. The board is saved atomically after every state change, and four situations reduce to one operation, "re-open a task and everything downstream of it":
+
+| Situation | What happens on the board |
+|---|---|
+| a task fails | it goes back to `pending` with the failure as feedback |
+| the audit blames a task | `invalidate(task, findings)` re-opens it and its dependents |
+| the user asks for a change | the same call, with the user's words as the feedback |
+| the process dies or is interrupted | reload the file; finished tasks stay finished |
+
+**Failures are handled at the cheapest level that can fix them:**
+
+| # | What went wrong | Response | Cost |
+|---|---|---|---|
+| 1 | a tool call fails | the error is logged with its traceback and returned to the agent, which adapts | one turn |
+| 2 | a submission is malformed or breaks a checked rule | the gate rejects it with the list of problems; the agent repairs it in the same conversation | one turn |
+| — | the model API is overloaded or unreachable | exponential backoff with jitter inside the call | a wait |
+| 3 | the agent crashes, runs out of turns, or never submits | the task is retried with a fresh context and the failure as feedback, up to `max_attempts` | one task |
+| 4 | the audit finds a defect | the blamed task and its dependents are re-opened with the findings, up to `max_audit_cycles` | part of the pipeline |
+| 5 | still failing | the run stops and reports what failed and why; the user gives guidance or says `resume` | the user's attention |
+
+Errors that retrying cannot fix (bad credentials, invalid request, a model refusal, a hook veto) skip straight to 5.
+
+**Validation rules** live in one table (`rules.py`). *Checked* rules are plain functions: deterministic and free. They run as a gate when an expert submits and again in the audit. *Judged* rules need judgement and are decided by the auditor agent, which must quote evidence.
+
+| Rule | Step | Kind | Requires |
+|---|---|---|---|
+| RES-GROUNDED | research | checked | every cited source is a file the researcher read or a page it fetched during the task (compared against the tool log; a search hit alone does not count) |
+| RES-RELEVANT | research | judged | the brief covers what the task needs; unknowns are open questions, not guesses |
+| PLAN-MVP | plan | judged | minimum viable scope, explicit non-goals, consistent with the research |
+| PRD-IDS | prd | checked | requirement ids unique and well-formed |
+| PRD-COVERAGE | prd | judged | requirements cover the plan's scope and nothing more |
+| PRD-TESTABLE | prd | judged | every acceptance criterion is objectively testable |
+| SPEC-TRACE | spec | checked | every requirement is covered by a work item; nothing covers a requirement that does not exist |
+| SPEC-DAG | spec | checked | work item ids unique, dependencies exist, no cycles |
+| SPEC-FILES | spec | checked | plain relative paths, one owner per file, tests included |
+| SPEC-DESIGN | spec | judged | the design can meet every acceptance criterion |
+| IMPL-FILES | implement | checked | every file exists, parses, and has no placeholder code |
+| IMPL-TESTS | implement | checked | the spec's test command passes, **run by the harness in the sandbox** |
+| IMPL-SPEC | implement | judged | the code does what the spec and acceptance criteria say |
+| ANS-GROUNDED | ad-hoc answer | checked | every source cited in an answer was actually opened |
+
+Together they form a traceability chain the harness can verify end to end: task → requirements → work items → files → passing tests.
+
+**The audit sweep** (`auditor.py`) goes over every step, cheapest and most certain evidence first:
+
+1. all checked rules on every step;
+2. the test suite, executed by the harness, so "tests pass" is observed rather than reported by the engineer; a failure is blamed on the work items whose files appear in the output, plus the items they build on;
+3. judged rules, one independent auditor run per task, with read access to the workspace.
+
+It stops before a more expensive phase when a cheaper one already found problems, skips tasks downstream of a failure (they will be redone anyway), and does not re-judge a task that has not changed since it last passed. The auditor is validated like every other agent: it must return exactly one verdict per rule. Each finding names the task to blame; the engine re-opens that task and its dependents with the finding as feedback. When the re-run budget is used up the run ends as `completed_with_open_findings` and says so.
+
+**Response validation.** When the pipeline finishes, the orchestrator reports the status, the audit result and where the files are. The user inspects them (`/show`, `/status`), then approves or asks for a change. A change request re-opens the earliest affected task; only that task and what depends on it are redone.
+
+## Log trail, exception handling, tracebacks
+
+Every action of every agent is an event on the bus, stamped with the task, the agent and the attempt, and appended to `runs/<session>/trail.jsonl` before anything else happens. `/trail engineer` is the engineer's trail; `/trail impl:W1` is one task's. An exception anywhere becomes an `error` event carrying the full traceback and whether it will be retried (`/errors`). No exception inside an agent or a tool can take the run down: the worst case is a failed task on the board.
+
+A session directory is a complete record:
+
+```text
+runs/<session>/board.json      task states, results, feedback, counters
+runs/<session>/trail.jsonl     every event
+runs/<session>/artifacts/      research.md, plan.md, prd.md, spec.md, impl-W1.md, audit.md
+runs/<session>/workspace/      the solution that was built
+```
+
+## Bonus items
+
+| Item | Where | What it does |
+|---|---|---|
+| Auto-memory | `memory.py` | Written and recalled automatically. Past research briefs and user change requests are retrieved by relevance to the new task and added to the handoff. |
+| Self-improvement | `memory.py`, `engine.py` | Every rule an agent role violates becomes a standing lesson for that role, with a hit counter, shown to it in every later session. The tests show a second session needing zero gate rejections and zero audit re-runs where the first needed two of each. |
+| Hooks | `events.py`, `examples/hooks.py` | Any function can subscribe to events. Raising `Block` from a `pre_tool` or `task_start` hook vetoes the action. The example enforces a token budget and a command deny-list. |
+| Gateway control, remote access | `server.py` | Token-protected HTTP API with server-sent events and a web UI: chat, status, and a stop button (itself a hook that vetoes the next task). |
+| Open-source and local models | `llm.py` | Any OpenAI-compatible endpoint, standard library only: Ollama, vLLM, LM Studio, OpenRouter. |
+| Security harness | `tools.py` | Generated code runs in bubblewrap or Docker: no network, no home directory, an empty environment (so no API keys), the workspace as the only writable path. File tools cannot leave the workspace (`..`, absolute paths and symlinks are resolved first). Engineers can write only the files of their own work item. Web fetches refuse non-public addresses, including through redirects. Tool output is treated as data, never as instructions. |
+
+Not done: running on a lower-level third-party harness (pi, hermes, openclaw). The harness here is its own low-level implementation.
+
+## Design decisions
+
+- **A deterministic state machine around non-deterministic workers.** The model does the work inside a step; code decides the order of steps, what counts as done, and what happens on failure. That is what makes the workflow resilient and testable without tuning prompts.
+- **Never trust a self-report.** The harness runs the tests itself, checks that files exist and parse, and compares cited sources against the tool log. The auditor is a separate agent with a fresh context.
+- **Deterministic checks before model judgement.** Checked rules catch most defects for free at submit time; the auditor is only paid to judge work that is already mechanically sound.
+- **One loop for all agents.** The orchestrator and the experts share `run_agent`, so logging, validation and error containment exist once.
+- **Structured handoffs.** Submissions are schema-validated JSON, which is what makes rules like SPEC-TRACE possible and keeps the harness independent of how a given model words things.
+- **One owner per file.** A spec must assign every file to exactly one work item, and the write tool enforces it, so engineers cannot overwrite each other.
+- **Provider-neutral core.** Everything above `llm.py` uses three message shapes; a backend is one class with one method.
+
+## Known limits and next steps
+
+- **Tasks run one at a time.** The board already knows which tasks are independent; running ready tasks concurrently needs a lock on the board and per-task output streams.
+- **Generated solutions are standard-library Python**, because the sandbox is offline. A dependency allow-list with a pre-built image would lift this.
+- **Sandbox limits are wall-clock only under bubblewrap** (Docker adds memory and CPU caps). cgroup limits or a microVM (Firecracker, gVisor) would be the next step for hostile code.
+- **Web search scrapes DuckDuckGo's HTML page**, which needs no key but can break; a search API is a small swap in `search_web`.
+- **Memory retrieval is lexical** (word overlap weighted by rarity). Embeddings when the store grows.
+- **No human approval between steps.** The user reviews at the end; an optional pause after the PRD would catch scope mistakes earlier and cheaper.
+- **The gateway serves one session, one request at a time, over plain HTTP.** Put it behind TLS or an SSH tunnel for real remote use.
+- **Long conversations are not compacted.** Expert conversations are short by construction (one task each); the orchestrator's history grows with the session.
+
+## Tests
+
+`python3 -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, peer delegation, a hook veto, workspace confinement, the address guard, sandbox isolation, both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream), and the HTTP gateway.
