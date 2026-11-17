@@ -124,6 +124,6 @@ def summary_text(s: dict) -> str:
     lines += [f"    {role:<12} {r['calls']:>3} calls" + (f"  {r['in']:>9,} in  {r['out']:>8,} out" if tokens else "") for role, r in s["roles"].items()]
     lines.append(
         f"    recoveries: {s['gate_rejections']} gate rejections · {s['tool_errors']} tool errors · {s['task_retries']} task retries · "
-        f"{s['model_retries']} model-call retries · {s['audit_cycles']} audit cycles · {s['lessons']} lessons recorded · {s['lessons_recalled']} lessons recalled into handoffs"
+        f"{s['model_retries']} model-call retries · {s['audit_cycles']} audit re-runs in the session · {s['lessons']} lessons recorded · {s['lessons_recalled']} lessons recalled into handoffs"
     )
     return "\n".join(lines)

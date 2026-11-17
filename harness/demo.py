@@ -165,7 +165,7 @@ class ScriptedTeam:
             if not isinstance(report, dict) or "tasks" not in report:
                 return Reply(text=result)
             done = sum(t["status"] == "done" for t in report["tasks"])
-            return Reply(text=f"Status: {report['status']}. {done}/{len(report['tasks'])} tasks done, {report['audit_cycles_used']} audit re-run round(s). Files: {', '.join(report['files']) or 'none'} in {report['workspace']}. Use /show to inspect them, or tell me what to change.")
+            return Reply(text=f"Status: {report['status']}. {done}/{len(report['tasks'])} tasks done, {report['audit_cycles_used']} audit re-run round(s) since the last change. Files: {', '.join(report['files']) or 'none'} in {report['workspace']}. Use /show to inspect them, or tell me what to change.")
         text = last["content"]
         if text.lower().startswith("ask ") or text.rstrip().endswith("?"):
             return self.call("ask_expert", expert="researcher", question=text[4:] if text.lower().startswith("ask ") else text)

@@ -75,7 +75,7 @@ PAGE = """<!doctype html>
         card.children[2].textContent = `${t.agent} · runs ${t.runs} · ${t.seconds}s · ${(t.tokens / 1000).toFixed(1)}k tok`;
         return card;
       }));
-      if (report.tasks.length) cards.append(Object.assign(document.createElement("small"), { textContent: `${report.status} · audit cycles ${report.audit_cycles_used}` }));
+      if (report.tasks.length) cards.append(Object.assign(document.createElement("small"), { textContent: `${report.status} · audit re-runs since the last change ${report.audit_cycles_used}` }));
     }
     if (!response || response.status !== 401) setTimeout(poll, 1000);
   }

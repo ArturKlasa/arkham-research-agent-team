@@ -80,7 +80,7 @@ The model behind every call is recorded in the trail (`llm` events).
 ↺ re-running impl:W1 (audit cycle 1)
 …
 ⚖ audit: all rules pass
-Status: completed. 7/7 tasks done, 2 audit re-run round(s). Files: api.py, db.py, test_api.py, test_db.py in runs/…/workspace.
+Status: completed. 7/7 tasks done, 2 audit re-run round(s) since the last change. Files: api.py, db.py, test_api.py, test_db.py in runs/…/workspace.
 
 > /show api.py                                  see what was implemented
 > change impl:W2 return the id in the 404 body  ask for changes (free text with a real model)

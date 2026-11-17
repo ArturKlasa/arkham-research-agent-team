@@ -112,7 +112,7 @@ class Orchestrator:
         if name == "/status":
             report = e.report()
             rows = [f"{t['id']:<12} {t['agent']:<11} {t['status']:<8} runs={t['runs']} {t['seconds']:>7}s {t['tokens']:>8} tok  {t.get('error', '')}" for t in report["tasks"]]
-            return "\n".join([f"session {self.session}: {report['status']} (audit cycles used: {report['audit_cycles_used']})", *rows, "", summary_text(e.summary())])
+            return "\n".join([f"session {self.session}: {report['status']} (audit re-runs since the last change: {report['audit_cycles_used']} of {e.cfg.max_audit_cycles})", *rows, "", summary_text(e.summary())])
         if name == "/show":
             return e.show(arg.strip())
         if name == "/trail":
