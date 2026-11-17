@@ -117,6 +117,11 @@ SPEC = {
 }
 
 
+def unwrap(result: str) -> str:
+    """A tool result without the <untrusted> fence the agent loop puts around it."""
+    return re.sub(r'\A<untrusted tool="\w+">\n|\n</untrusted>\Z', "", result)
+
+
 class ScriptedTeam:
     def __init__(self, faults: bool = True):
         self.faults = faults
@@ -145,19 +150,20 @@ class ScriptedTeam:
 
     @staticmethod
     def results(messages) -> list[str]:
-        return [m["content"] for m in messages if m["role"] == "tool"]
+        return [unwrap(m["content"]) for m in messages if m["role"] == "tool"]
 
     # --- the user-facing agent ---
 
     def orchestrator(self, messages, tools) -> Reply:
         last = messages[-1]
         if last["role"] == "tool":
+            result = unwrap(last["content"])
             try:
-                report = json.loads(last["content"])
+                report = json.loads(result)
             except ValueError:
-                return Reply(text=last["content"])
+                return Reply(text=result)
             if not isinstance(report, dict) or "tasks" not in report:
-                return Reply(text=last["content"])
+                return Reply(text=result)
             done = sum(t["status"] == "done" for t in report["tasks"])
             return Reply(text=f"Status: {report['status']}. {done}/{len(report['tasks'])} tasks done, {report['audit_cycles_used']} audit re-run round(s). Files: {', '.join(report['files']) or 'none'} in {report['workspace']}. Use /show to inspect them, or tell me what to change.")
         text = last["content"]

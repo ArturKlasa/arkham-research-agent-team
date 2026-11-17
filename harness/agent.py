@@ -14,6 +14,7 @@ traceback and handed back to the model as an error result it can react to.
 
 from __future__ import annotations
 
+import re
 import traceback
 from dataclasses import dataclass
 from typing import Callable
@@ -63,6 +64,11 @@ def clip(text: str, limit: int = 20_000) -> str:
     if len(text) <= limit:
         return text
     return f"{text[: limit // 2]}\n… [{len(text) - limit} characters cut from the middle]\n{text[-limit // 2 :]}"
+
+
+def fence(tool: str, text: str) -> str:
+    """Mark a tool result as untrusted data. A closing tag inside the text is escaped so it cannot end the fence early."""
+    return f'<untrusted tool="{tool}">\n' + re.sub(r"</(\s*untrusted)", r"<\\/\1", text, flags=re.I) + "\n</untrusted>"
 
 
 def run_agent(llm, bus, cfg, system, messages, tools, submit_schema=None, check=None, on_text=None):
@@ -124,7 +130,7 @@ def _call_tool(bus, tool: Tool | None, call) -> tuple[str, bool]:
         bus.emit("pre_tool", tool=tool.name, args=call.args)  # whole arguments: a policy hook must see all of a command
         output = tool.fn(call.args)
         bus.emit("post_tool", tool=tool.name, ok=True, output=output[:500])
-        return output, False
+        return fence(tool.name, output), False  # clip() later keeps both ends, so the tags survive it
     except Block as veto:
         bus.emit("post_tool", tool=tool.name, ok=False, output=f"blocked by hook: {veto}")
         return f"Blocked by policy: {veto}", True
