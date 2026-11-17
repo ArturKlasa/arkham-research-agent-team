@@ -24,7 +24,7 @@ import traceback
 from pathlib import Path
 
 from . import auditor
-from .agent import Tool, run_agent
+from .agent import Tool, clip, run_agent
 from .board import Board, Task
 from .events import Block, Bus, Event, Halt
 from .experts import ANSWER, ASK, EXPERTS, READ, TEXT, obj
@@ -418,6 +418,13 @@ class Engine:
             ],
             "audit": audit.result if audit and audit.status == "done" else None,
             "audit_cycles_used": self.board.meta.get("audit_cycles", 0),
+            # what earlier sweeps found and the re-runs fixed: the final audit alone only says "all rules pass"
+            # ponytail: the last 10 of the session, clipped; the full text stays in the trail (/trail auditor)
+            "findings_acted_on": [
+                {"rule": f["rule"], "task": f["task"], "evidence": clip(f["evidence"], 300), "fix": clip(f["fix"], 300)}
+                for e in self.bus.read(type="audit")
+                for f in e["findings"]
+            ][-10:],
             "tests": self._tests(),
             "files": self.ws.files(with_sources=False),
         }

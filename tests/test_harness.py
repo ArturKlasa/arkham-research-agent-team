@@ -125,6 +125,10 @@ class Pipeline(HarnessCase):
         )
         self.assertEqual(sum(r["calls"] for r in summary["roles"].values()), len(self.events(orch, type="llm")))
         self.assertIn("2 gate rejections", orch.command("/status"))
+        acted_on = orch.engine.report()["findings_acted_on"]
+        self.assertEqual(
+            [(f["rule"], f["task"]) for f in acted_on], [("IMPL-TESTS", "impl:W1"), ("IMPL-SPEC", "impl:W2")]
+        )
 
     def test_every_failure_is_recovered_at_the_cheapest_level(self):
         orch = self.team()
