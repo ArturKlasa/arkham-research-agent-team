@@ -155,7 +155,8 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
             if not command and not busy.acquire(blocking=False):
                 return self.reply(409, "the team is busy with another request")
             try:
-                stop.clear()
+                if not command:  # a slash command asked mid-run must not cancel a pending stop
+                    stop.clear()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")

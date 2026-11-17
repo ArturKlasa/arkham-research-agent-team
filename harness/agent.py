@@ -19,7 +19,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Callable
 
-from .events import Block
+from .events import Block, Halt
 from .llm import FatalError, chat
 
 SUBMIT = "submit"
@@ -131,6 +131,8 @@ def _call_tool(bus, tool: Tool | None, call) -> tuple[str, bool]:
         output = tool.fn(call.args)
         bus.emit("post_tool", tool=tool.name, ok=True, output=output[:500])
         return fence(tool.name, output), False  # clip() later keeps both ends, so the tags survive it
+    except Halt:  # the operator's stop ends the run; it is not a policy veto for the agent to work around
+        raise
     except Block as veto:
         bus.emit("post_tool", tool=tool.name, ok=False, output=f"blocked by hook: {veto}")
         return f"Blocked by policy: {veto}", True
