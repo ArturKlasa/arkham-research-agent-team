@@ -4,14 +4,17 @@ They run offline against the scripted team (harness/demo.py), which makes one
 mistake of every kind on purpose.    python3 -m unittest discover -s tests -v
 """
 
+import http.client
 import importlib.util
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import unittest.mock
 import urllib.error
@@ -40,7 +43,7 @@ from harness.llm import (
     make_llm,
 )
 from harness.orchestrator import Orchestrator
-from harness.server import build
+from harness.server import RETRY_DELAY, build
 from harness.memory import Memory
 from harness.rules import _buildable, _file_ownership, _files_written, _placeholders, _traceable, reaches_out
 from harness.tools import (
@@ -1551,12 +1554,29 @@ class ClaudeLineUp(unittest.TestCase):
 
 
 class Gateway(HarnessCase):
-    def serve(self, orch) -> str:
-        server = build(orch, "127.0.0.1", 0, "secret")
+    def serve(self, orch, cert: str = "", key: str = "") -> str:
+        server = build(orch, "127.0.0.1", 0, "secret", cert, key)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        return f"http://127.0.0.1:{server.server_port}"
+        return f"{'https' if cert else 'http'}://127.0.0.1:{server.server_port}"
+
+    @unittest.skipUnless(shutil.which("openssl"), "needs the openssl command to make a certificate")
+    def test_given_a_certificate_the_gateway_answers_over_tls_only(self):
+        cert, key = str(self.tmp / "cert.pem"), str(self.tmp / "key.pem")
+        subject = ["-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1"]
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", *subject, "-keyout", key]
+            + ["-out", cert],
+            check=True,
+            capture_output=True,
+        )
+        url = self.serve(self.team(), cert, key)
+        request = urllib.request.Request(url + "/status", headers={"Authorization": "Bearer secret"})
+        trusting = ssl.create_default_context(cafile=cert)  # the client checks the certificate: no shortcut
+        self.assertIn("status", json.loads(urllib.request.urlopen(request, timeout=10, context=trusting).read()))
+        with self.assertRaises((OSError, http.client.HTTPException)):  # the token never crosses in the clear
+            urllib.request.urlopen(url.replace("https", "http") + "/", timeout=10)
 
     def test_a_slash_command_does_not_cancel_a_pending_stop(self):
         orch = self.team()
@@ -1575,12 +1595,14 @@ class Gateway(HarnessCase):
             request = urllib.request.Request(url + path, body, {"Authorization": f"Bearer {token}"})
             return urllib.request.urlopen(request, timeout=60).read().decode()
 
+        started = time.monotonic()
         with self.assertRaises(urllib.error.HTTPError) as denied:
             post("/chat", "wrong")
         self.assertEqual(denied.exception.code, 401)
         with self.assertRaises(urllib.error.HTTPError) as denied:
             post("/chat", "wr\u00f6ng")
         self.assertEqual(denied.exception.code, 401)
+        self.assertGreaterEqual(time.monotonic() - started, 2 * RETRY_DELAY)  # each wrong token costs a wait
 
         midrun = []  # a slash command sent while the build holds the team is still answered
         orch.engine.bus.on(

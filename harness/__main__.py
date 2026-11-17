@@ -67,6 +67,8 @@ def main() -> None:
     )
     parser.add_argument("--host", default="127.0.0.1", help="bind address for --serve; 0.0.0.0 allows remote access")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--tls-cert", default="", help="certificate file (PEM) for --serve: it then speaks HTTPS")
+    parser.add_argument("--tls-key", default="", help="private key file (PEM), if not inside the certificate file")
     args = parser.parse_args()
 
     chosen = {
@@ -81,7 +83,7 @@ def main() -> None:
     if args.serve:
         from .server import serve
 
-        return serve(orchestrator, args.host, args.port)
+        return serve(orchestrator, args.host, args.port, args.tls_cert, args.tls_key)
 
     out = Printer()
     orchestrator.engine.bus.on(out.event)

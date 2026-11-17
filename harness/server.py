@@ -6,6 +6,7 @@
     POST /stop    halt the run at the next task boundary (continue later with "resume")
 
 Every endpoint except the page itself requires `Authorization: Bearer <token>`.
+Given a certificate (`--tls-cert`, `--tls-key`) it serves HTTPS, so the token is not sent in the clear.
 """
 
 from __future__ import annotations
@@ -14,10 +15,15 @@ import hmac
 import json
 import os
 import secrets
+import ssl
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .events import Event, Halt, render
+
+RETRY_DELAY = 0.5  # seconds a wrong token costs
 
 PAGE = """<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -110,8 +116,16 @@ PAGE = """<!doctype html>
 """
 
 
-def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer:
+class Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # a client that fails the TLS handshake or hangs up is not worth a traceback on the console
+        if not isinstance(sys.exc_info()[1], (ssl.SSLError, ConnectionError)):
+            super().handle_error(request, client_address)
+
+
+def build(orchestrator, host: str, port: int, token: str, cert: str = "", key: str = "") -> ThreadingHTTPServer:
     busy = threading.Lock()  # one session, one request at a time; a session map lifts this
+    denied = threading.Lock()
     stop = threading.Event()
     bus = orchestrator.engine.bus
 
@@ -137,6 +151,8 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
             # bytes: any header value compares
             ok = hmac.compare_digest(self.headers.get("Authorization", "").encode(), f"Bearer {token}".encode())
             if not ok:
+                with denied:  # wrong tokens are answered one at a time, so guessing in parallel gains nothing
+                    time.sleep(RETRY_DELAY)
                 self.reply(401, "missing or invalid token")
             return ok
 
@@ -200,18 +216,25 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
             finally:
                 bus.off(progress)
 
-    return ThreadingHTTPServer((host, port), Handler)
+    server = Server((host, port), Handler)
+    if cert:
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(cert, key or None)
+        # the handshake runs in the request's own thread, so a silent client cannot hold up the accept loop
+        server.socket = tls.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
+    return server
 
 
-def serve(orchestrator, host: str, port: int) -> None:
+def serve(orchestrator, host: str, port: int, cert: str = "", key: str = "") -> None:
     token = os.environ.get("HARNESS_TOKEN") or secrets.token_urlsafe(16)
-    server = build(orchestrator, host, port, token)
+    server = build(orchestrator, host, port, token, cert, key)
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
-    print(f"Session {orchestrator.session} · open http://{shown}:{server.server_port}/#{token}", flush=True)
-    if host not in ("127.0.0.1", "localhost"):
+    scheme = "https" if cert else "http"
+    print(f"Session {orchestrator.session} · open {scheme}://{shown}:{server.server_port}/#{token}", flush=True)
+    if not cert and host not in ("127.0.0.1", "localhost"):
         print(
             "Listening on a network interface over plain HTTP: "
-            "put it behind TLS or an SSH tunnel before real remote use."
+            "pass --tls-cert and --tls-key, or use an SSH tunnel, before real remote use."
         )
     try:
         server.serve_forever()
