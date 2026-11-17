@@ -199,7 +199,9 @@ class Engine:
 
     def _tools(self, task: Task, expert) -> list[Tool]:
         writable = set(task.meta["item"]["files"]) if task.kind == "implement" else None
-        tools = make_tools(self.ws, self.cfg, task.meta["consulted"], writable)
+        # Opened before: a revision may re-open the sources it cites. User URLs: from their raw messages, see Orchestrator.send.
+        fetchable = set(self.board.meta.get("user_urls", [])) | {c.split("#")[0] for c in task.meta["consulted"]}
+        tools = make_tools(self.ws, self.cfg, task.meta["consulted"], writable, fetchable)
         tools[ASK] = Tool(
             ASK,
             "Ask the researcher to establish one specific fact from the reference files or the web. Use only when a missing fact blocks you.",

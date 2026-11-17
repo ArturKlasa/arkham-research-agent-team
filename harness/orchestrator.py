@@ -17,6 +17,7 @@ from .engine import Engine
 from .events import summary_text
 from .experts import TEXT, obj
 from .llm import for_role, make_llm
+from .tools import urls
 
 EXPERTS_TO_ASK = ["researcher", "planner", "product", "architect", "engineer"]
 
@@ -76,6 +77,12 @@ class Orchestrator:
 
     def send(self, text: str, on_text) -> None:
         """One user turn. The reply streams through on_text; progress arrives as events on engine.bus."""
+        # The user's own words are the only trusted source of URLs: the orchestrator model writes the task and the
+        # questions it passes on, and it reads untrusted text (files, answers), so URLs it writes do not count.
+        if found := urls(text):
+            meta = self.engine.board.meta
+            meta["user_urls"] = sorted(set(meta.get("user_urls", [])) | found)
+            self.engine.board.save()
         self.messages.append({"role": "user", "content": text})
         with self.engine.bus.scope(agent="orchestrator"):
             run_agent(for_role(self.llm, "orchestrator"), self.engine.bus, self.cfg, SYSTEM, self.messages, self.tools, on_text=on_text)
