@@ -74,13 +74,15 @@ def make_llm(cfg):
     """The backend for cfg.provider, or a Roster when models are set per role.
 
     With provider=anthropic and no --model, CLAUDE_ROLES applies and cfg.roles overrides single roles of it.
-    An explicit --model is the model for every role cfg.roles does not list.
+    An explicit --model is the model for every role cfg.roles does not list. A role entry may name its own
+    provider, "auditor=openai+gpt-oss:120b", so one role can run on another model family than the rest.
     """
     if cfg.provider == "scripted":
         from .demo import ScriptedTeam
 
         return ScriptedTeam()
-    backend = {"anthropic": AnthropicLLM, "openai": OpenAICompatLLM}.get(cfg.provider)
+    backends = {"anthropic": AnthropicLLM, "openai": OpenAICompatLLM}
+    backend = backends.get(cfg.provider)
     if backend is None:
         raise ValueError(f"unknown provider {cfg.provider!r} (use anthropic, openai or scripted)")
     from dataclasses import replace
@@ -91,10 +93,11 @@ def make_llm(cfg):
     by_role = {}
     for item in filter(None, (part.strip() for part in spec.split(","))):
         role, _, rest = item.partition("=")
+        provider, plus, rest = rest.partition("+") if "+" in rest else (cfg.provider, "", rest)
         model, _, effort = rest.partition("@")  # "@", not ":", because Ollama model names contain a colon
-        if role not in {"orchestrator", *EXPERTS} or not model:
-            raise ValueError(f"bad role entry {item!r}: use role=model[@effort] with a role from orchestrator, {', '.join(EXPERTS)}")
-        by_role[role] = backend(replace(cfg, model=model, effort=effort or cfg.effort))
+        if role not in {"orchestrator", *EXPERTS} or not model or provider not in backends:
+            raise ValueError(f"bad role entry {item!r}: use role=[provider+]model[@effort] with a role from orchestrator, {', '.join(EXPERTS)}")
+        by_role[role] = backends[provider](replace(cfg, provider=provider, model=model, effort=effort or cfg.effort))
     return Roster(backend(cfg), by_role) if by_role else backend(cfg)  # the default serves roles not listed
 
 

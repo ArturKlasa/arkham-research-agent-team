@@ -29,7 +29,7 @@ Then type what you want built. Other entry points and options:
 .venv/bin/python -m harness --sources ./docs              # give the agents reference files to research
 .venv/bin/python -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
 .venv/bin/python -m harness --hooks examples/hooks.py     # load policy hooks
-.venv/bin/python -m unittest discover -s tests -v         # 62 tests, offline, about 8 seconds
+.venv/bin/python -m unittest discover -s tests -v         # 63 tests, offline, about 9 seconds
 ```
 
 Requirements: Linux or macOS (the memory file is locked with `fcntl`, so Windows needs WSL), Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
@@ -46,7 +46,7 @@ Each agent role talks to its own model. With Claude, and no `--model` or `--role
 | engineer | Claude Opus 5.5, effort medium | the most tokens, but every re-run repeats gate, tests and audit |
 | auditor | Claude Opus 5.5, effort high | judges everyone else's work |
 
-Change single roles with `--roles` (or `HARNESS_ROLES`): `role=model[@effort]`, comma-separated; the rest of the line-up stays. `--model` replaces the line-up: it is the model for every role `--roles` does not list. With an OpenAI-compatible server `--model` is required and effort is ignored:
+Change single roles with `--roles` (or `HARNESS_ROLES`): `role=[provider+]model[@effort]`, comma-separated; the rest of the line-up stays. `--model` replaces the line-up: it is the model for every role `--roles` does not list. With an OpenAI-compatible server `--model` is required and effort is ignored:
 
 ```bash
 .venv/bin/python -m harness --roles auditor=claude-fable-5-2@high          # only the auditor changes
@@ -54,7 +54,14 @@ Change single roles with `--roles` (or `HARNESS_ROLES`): `role=model[@effort]`, 
     --model openai/gpt-oss-120b --roles orchestrator=openai/gpt-oss-20b
 ```
 
-The model behind every call is recorded in the trail (`llm` events). One provider serves all roles in a run, so an auditor from a different model family than the agents it judges is not yet possible.
+A role can name its own provider, so the auditor can come from a different model family than the agents it judges, and does not share their blind spots:
+
+```bash
+.venv/bin/python -m harness --roles auditor=openai+gpt-oss:120b                    # Claude team, open-weight auditor on Ollama
+.venv/bin/python -m harness --base-url https://openrouter.ai/api/v1 --roles auditor=openai+openai/gpt-oss-120b
+```
+
+The model behind every call is recorded in the trail (`llm` events).
 
 ## What a session looks like
 
@@ -277,4 +284,4 @@ The test `test_a_poisoned_reference_file_cannot_make_an_obedient_agent_leak_a_se
 
 ## Tests
 
-`.venv/bin/python -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, a change request staying in force through later re-runs and reaching the auditor, a suite that runs no tests, a test command that cannot run (or starts and stops before any test), a fatal model error escalated without retry, the spec rules (dependency cycles, unknown dependencies, shared files, untraced requirements), the agent loop (refusal, a cut-off tool call never run, an idle agent), transitive blame, pause and resume (a stop that interrupts a nested question, and one that a slash command must not cancel), `/errors` for every recorded error, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, prompt injection (fenced tool output, the URL allow-list including the orchestrator and workspace paths, a poisoned reference file, a URL alphabet planted in a reference file, a change request the user never made, audit-gated memory, the outward-call listing), peer delegation, a hook veto, workspace confinement, file ownership for the write tool and under shell commands (including a directory swapped for a symlink), unreadable or unwritable memory, paged file reads (including a file that is one long line), the placeholder check, work-item id format, empty package markers and unparsable files, settings precedence, per-role model routing, a research revision keeping the sources it already opened, concurrent memory writes, the address guard, sandbox isolation, both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream and a stream that is cut or closed early), and the HTTP gateway.
+`.venv/bin/python -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, a change request staying in force through later re-runs and reaching the auditor, a suite that runs no tests, a test command that cannot run (or starts and stops before any test), a fatal model error escalated without retry, the spec rules (dependency cycles, unknown dependencies, shared files, untraced requirements), the agent loop (refusal, a cut-off tool call never run, an idle agent), transitive blame, pause and resume (a stop that interrupts a nested question, and one that a slash command must not cancel), `/errors` for every recorded error, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, prompt injection (fenced tool output, the URL allow-list including the orchestrator and workspace paths, a poisoned reference file, a URL alphabet planted in a reference file, a change request the user never made, audit-gated memory, the outward-call listing), peer delegation, a hook veto, workspace confinement, file ownership for the write tool and under shell commands (including a directory swapped for a symlink), unreadable or unwritable memory, paged file reads (including a file that is one long line), the placeholder check, work-item id format, empty package markers and unparsable files, settings precedence, per-role model routing (including a role on another provider), a research revision keeping the sources it already opened, concurrent memory writes, the address guard, sandbox isolation, both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream and a stream that is cut or closed early), and the HTTP gateway.

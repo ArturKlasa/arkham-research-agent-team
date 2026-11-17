@@ -821,6 +821,14 @@ class ClaudeLineUp(unittest.TestCase):
         tuned = make_llm(Config(roles="auditor=claude-fable-5-2@max"))  # overrides one role, keeps the rest of the line-up
         self.assertEqual((for_role(tuned, "auditor").model, for_role(tuned, "auditor").effort, for_role(tuned, "orchestrator").model), ("claude-fable-5-2", "max", "claude-sonnet-5-5"))
 
+    def test_one_role_can_run_on_another_model_family(self):
+        mixed = make_llm(Config(roles="auditor=openai+gpt-oss:120b"))  # the auditor leaves Claude, the line-up stays
+        self.assertEqual((type(for_role(mixed, "auditor")), for_role(mixed, "auditor").model), (OpenAICompatLLM, "gpt-oss:120b"))
+        self.assertEqual((type(for_role(mixed, "engineer")), for_role(mixed, "engineer").model), (AnthropicLLM, "claude-opus-5-5"))
+        local = make_llm(Config(provider="openai", model="qwen3:8b", roles="auditor=anthropic+claude-opus-5-5@high"))
+        self.assertEqual((type(for_role(local, "auditor")), type(for_role(local, "planner"))), (AnthropicLLM, OpenAICompatLLM))
+        self.assertRaises(ValueError, make_llm, Config(roles="auditor=gemini+x"))
+
 
 class Gateway(HarnessCase):
     def serve(self, orch) -> str:
