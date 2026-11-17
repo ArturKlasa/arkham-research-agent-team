@@ -26,7 +26,7 @@ from pathlib import Path
 from . import auditor
 from .agent import Tool, run_agent
 from .board import Board, Task
-from .events import Block, Bus, Halt
+from .events import Block, Bus, Event, Halt
 from .experts import ANSWER, ASK, EXPERTS, READ, TEXT, obj
 from .llm import FatalError, for_role
 from .memory import Memory
@@ -307,7 +307,7 @@ class Engine:
 
     # --- acting on the audit --------------------------------------------------------------------
 
-    def _act_on_audit(self, findings: list[dict]) -> None:
+    def _act_on_audit(self, findings: list[auditor.Finding]) -> None:
         self.bus.emit("audit", findings=findings)
         research = self.board.tasks["research"]
         # a brief read from the web enters memory only once the auditor passed it
@@ -341,7 +341,7 @@ class Engine:
         self._memory("lesson", role, rule_id, text, self.dir.name)
         self.bus.emit("lesson", role=role, rule=rule_id)
 
-    def _meter(self, event: dict) -> None:
+    def _meter(self, event: Event) -> None:
         task = self.board.tasks.get(event.get("task"))
         if task:
             task.tokens += event["usage"]["in"] + event["usage"]["out"]

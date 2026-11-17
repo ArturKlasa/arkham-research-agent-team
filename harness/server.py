@@ -17,7 +17,7 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .events import Halt, render
+from .events import Event, Halt, render
 
 PAGE = """<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -183,7 +183,7 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
                 except OSError:
                     pass  # the client went away; the run continues and its state stays on the board
 
-            def progress(event: dict) -> None:
+            def progress(event: Event) -> None:
                 line = render(event)
                 if line:
                     push("event", line)

@@ -11,14 +11,14 @@ The sweep stops before a more expensive phase when a cheaper one already
 found problems: there is no point paying a model to judge work that is
 mechanically broken and about to be redone.
 
-A finding is {"rule", "task", "evidence", "fix"}; `task` is the task to blame,
-which the engine re-opens together with everything downstream of it.
+What the sweep returns is a list of `Finding`s; an empty list means the audit passed.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from typing import TYPE_CHECKING, TypedDict
 
 from .agent import run_agent
 from .experts import EXPERTS, TEXT, arr, obj
@@ -26,8 +26,21 @@ from .llm import for_role
 from .rules import SUITE, judged, reaches_out, violations
 from .tools import make_tools, run_sandboxed
 
+if TYPE_CHECKING:
+    from .board import Task
+    from .engine import Engine
 
-def sweep(eng) -> list[dict]:
+
+class Finding(TypedDict):
+    """One rule a step broke."""
+
+    rule: str  # the rule's id
+    task: str  # the task to blame: the engine re-opens it together with everything downstream of it
+    evidence: str
+    fix: str
+
+
+def sweep(eng: Engine) -> list[Finding]:
     tasks = eng.board.pipeline()
 
     findings = [
@@ -53,7 +66,7 @@ def sweep(eng) -> list[dict]:
     return findings
 
 
-def run_suite(eng) -> list[dict]:
+def run_suite(eng: Engine) -> list[Finding]:
     """Run the spec's test command. A failure is blamed on the work items whose files show up in the output."""
     command = eng.board.tasks["spec"].result["test_command"]
     code, output = run_sandboxed(eng.cfg, eng.ws.root, command)
@@ -113,7 +126,7 @@ def run_suite(eng) -> list[dict]:
     ]
 
 
-def judge(eng, task) -> list[dict]:
+def judge(eng: Engine, task: Task) -> list[Finding]:
     """One auditor-agent run: a verdict with evidence for each judged rule of the task's step."""
     rules = judged(task.kind)
     if not rules:
@@ -176,7 +189,7 @@ def judge(eng, task) -> list[dict]:
     return result["verdicts"]
 
 
-def _outward(eng, task) -> str:
+def _outward(eng: Engine, task: Task) -> str:
     """For code: every line that reaches outside the program, found by the harness.
 
     A comment cannot hide one; the list covers the usual routes (imports, known calls, computed names), not every trick.
@@ -197,5 +210,5 @@ def _outward(eng, task) -> str:
     )
 
 
-def _finding(rule: str, task: str, evidence: str, fix: str) -> dict:
+def _finding(rule: str, task: str, evidence: str, fix: str) -> Finding:
     return {"rule": rule, "task": task, "evidence": evidence, "fix": fix}

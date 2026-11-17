@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .agent import Tool, run_agent
 from .engine import Engine
-from .events import Halt, summary_text
+from .events import Event, Halt, summary_text
 from .experts import TEXT, obj
 from .llm import for_role, make_llm
 from .memory import read_jsonl
@@ -208,7 +208,7 @@ def _as_text(fn):
     return call
 
 
-def _trail_line(ev: dict) -> str:
+def _trail_line(ev: Event) -> str:
     skip = {"seq", "ts", "type", "task", "agent", "attempt", "traceback"}
     detail = " ".join(f"{k}={str(v)[:80]!r}" for k, v in ev.items() if k not in skip)
     stamp = time.strftime("%H:%M:%S", time.localtime(ev["ts"]))

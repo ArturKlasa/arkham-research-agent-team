@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .config import Config
-from .events import render
+from .events import Event, render
 from .orchestrator import HELP, Orchestrator
 
 DIM, RESET = ("\033[2m", "\033[0m") if sys.stdout.isatty() else ("", "")
@@ -25,7 +25,7 @@ class Printer:
         sys.stdout.flush()
         self.midline = not chunk.endswith("\n")
 
-    def event(self, event: dict) -> None:
+    def event(self, event: Event) -> None:
         line = render(event)
         if line:
             self.text(("\n" if self.midline else "") + f"{DIM}{line}{RESET}\n")

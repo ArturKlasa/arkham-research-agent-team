@@ -19,7 +19,11 @@ import posixpath
 import re
 import tokenize
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from .board import Task
+    from .engine import Engine
 
 
 @dataclass(frozen=True)
@@ -27,14 +31,14 @@ class Rule:
     id: str
     step: str  # the task kind it applies to
     text: str
-    check: Callable | None = None
+    check: Callable[[dict, Task, Engine], list[str]] | None = None
 
 
 def _same_source(name: str) -> str:
     return name.split("#")[0].rstrip("/")
 
 
-def _grounded(result, task, eng):
+def _grounded(result: dict, task: Task, eng: Engine) -> list[str]:
     opened = {_same_source(name) for name in task.meta.get("consulted", [])}
     cited = [f["source"] for f in result["findings"]] if "findings" in result else result["sources"]
     return [
@@ -44,7 +48,7 @@ def _grounded(result, task, eng):
     ]
 
 
-def _requirement_ids(result, task, eng):
+def _requirement_ids(result: dict, task: Task, eng: Engine) -> list[str]:
     ids = [r["id"] for r in result["requirements"]]
     problems = [f"requirement id {i!r} must look like R1, R2, ..." for i in ids if not re.fullmatch(r"R\d+", i)]
     return (
@@ -53,7 +57,7 @@ def _requirement_ids(result, task, eng):
     )
 
 
-def _traceable(result, task, eng):
+def _traceable(result: dict, task: Task, eng: Engine) -> list[str]:
     required = {r["id"] for r in eng.board.tasks["prd"].result["requirements"]}
     covered = {r for item in result["work_items"] for r in item["covers"]}
     problems = [f"requirement {r} is not covered by any work item" for r in sorted(required - covered)]
@@ -62,7 +66,7 @@ def _traceable(result, task, eng):
     )
 
 
-def _buildable(result, task, eng):
+def _buildable(result: dict, task: Task, eng: Engine) -> list[str]:
     ids = [item["id"] for item in result["work_items"]]
     # ids become task ids and file names
     problems = [f"work item id {i!r} must look like W1, W2, ..." for i in ids if not re.fullmatch(r"W\d+", i)]
@@ -80,7 +84,7 @@ def _buildable(result, task, eng):
     return problems
 
 
-def _file_ownership(result, task, eng):
+def _file_ownership(result: dict, task: Task, eng: Engine) -> list[str]:
     files = [f for item in result["work_items"] for f in item["files"]]
     outside = [f for f in files if f.startswith(("/", "sources/")) or ".." in f.split("/")]
     problems = [f"file path {f!r} must be relative and inside the workspace" for f in outside]
@@ -97,7 +101,7 @@ def _file_ownership(result, task, eng):
     return problems
 
 
-def _files_written(result, task, eng):
+def _files_written(result: dict, task: Task, eng: Engine) -> list[str]:
     problems = []
     for name in task.meta["item"]["files"]:
         try:
@@ -268,7 +272,7 @@ RULES = [
 SUITE = Rule("IMPL-TESTS", "implement", "The spec's test command passes in the sandbox and runs at least one test.")
 
 
-def violations(result: dict, task, eng) -> list[tuple[Rule, str]]:
+def violations(result: dict, task: Task, eng: Engine) -> list[tuple[Rule, str]]:
     """Run every checked rule for the task's step. Returns (rule, problem) pairs."""
     return [
         (rule, problem)

@@ -20,6 +20,19 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TypedDict
+
+
+class Entry(TypedDict):
+    """One line of the memory file."""
+
+    kind: str  # "lesson", or the kind of note: "research" or "feedback"
+    role: str  # the agent role it is for
+    key: str  # a lesson's rule id; empty for a note
+    text: str
+    hits: int  # how many times the lesson was learned
+    run: str  # the session that wrote it
+    ts: float
 
 
 def read_jsonl(path: Path):
@@ -38,7 +51,7 @@ def _words(text: str) -> set[str]:
 class Memory:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.items: list[dict] = []
+        self.items: list[Entry] = []
         self._load()
 
     def _load(self) -> None:

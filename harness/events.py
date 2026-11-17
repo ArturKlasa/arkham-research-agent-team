@@ -12,8 +12,13 @@ import json
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from .memory import read_jsonl
+
+# An event always has `seq`, `ts` and `type`; `task`, `agent` and `attempt` when someone is acting; then the fields of
+# its type (an `error` has `where`, `error`, `traceback` and `will_retry`, for example).
+Event = dict[str, Any]
 
 
 class Block(Exception):
@@ -53,7 +58,7 @@ class Bus:
         finally:
             self.context = outer
 
-    def emit(self, type: str, **data) -> dict:
+    def emit(self, type: str, **data) -> Event:
         self.seq += 1
         event = {"seq": self.seq, "ts": round(time.time(), 3), "type": type, **self.context, **data}
         with self.trail.open("a") as f:  # logged before hooks run, so a veto is itself on record
@@ -70,12 +75,12 @@ class Bus:
                     self.emit("hook_error", hook=getattr(fn, "__name__", repr(fn)), error=repr(exc))
         return event
 
-    def read(self, **match) -> list[dict]:
+    def read(self, **match) -> list[Event]:
         """The trail, optionally filtered, e.g. read(agent="engineer") or read(type="error")."""
         return [e for e in read_jsonl(self.trail) if all(e.get(k) == v for k, v in match.items())]
 
 
-def render(e: dict) -> str | None:
+def render(e: Event) -> str | None:
     """One human-readable progress line for an event, or None if it is not worth showing live."""
     kind, task = e["type"], e.get("task", "")
     if kind == "task_start":
