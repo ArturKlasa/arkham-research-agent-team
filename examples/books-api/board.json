@@ -1,0 +1,539 @@
+{
+ "meta": {
+  "task": "Build a small HTTP JSON API, using only the Python standard library, for consulting a mock database of books. Endpoints: list all books, get one book by id (return 404 if missing), and search books by author. Include unit tests.",
+  "audit_cycles": 2,
+  "accepted": false
+ },
+ "tasks": [
+  {
+   "id": "research",
+   "kind": "research",
+   "agent": "researcher",
+   "deps": [],
+   "status": "done",
+   "attempts": 1,
+   "runs": 1,
+   "version": 1,
+   "feedback": [],
+   "result": {
+    "summary": "sources/ is empty, so there are no reference files. I opened only the Python http.server docs (3.15.2). I did not open the unittest, urllib.parse or json docs. A stdlib-only build with http.server and unittest is feasible. The design suggestions below are mine, not sourced facts: GET /books, GET /books/{id} with a JSON 404, GET /books?author=<name> (case-insensitive substring match), an in-memory list of dicts as the mock DB, urllib.parse for the query string, and json for bodies. For tests, run a ThreadingHTTPServer on port 0 in a background thread and call it with urllib.request. Also unit-test the data layer directly.",
+    "findings": [
+     {
+      "claim": "http.server provides HTTPServer and ThreadingHTTPServer (threaded, added in 3.7). Both take a RequestHandlerClass, typically a BaseHTTPRequestHandler subclass. The handler dispatches to do_<METHOD>() methods, e.g. do_GET.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "The handler's `path` attribute includes the query string, so the code must split it itself (e.g. with urllib.parse) to read ?author=.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "send_error() produces an HTML error body by default (error_content_type is 'text/html'). For a JSON 404, write the response manually with send_response, send_header and wfile.write, or override error_content_type and error_message_format.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "protocol_version defaults to HTTP/1.0. If set to HTTP/1.1, every response must include an accurate Content-Length header. wfile is a binary stream, so JSON must be encoded to bytes.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "The docs warn that http.server is not recommended for production and only implements basic security checks. send_header does no CRLF validation, so untrusted input must not be placed in headers.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "HTTPServer exposes server_port, and the handler can reach the server through its `server` attribute. This allows binding to port 0 in tests and reading the assigned port, and also allows sharing the data store via the server object. Port 0 itself is my inference, not stated on the page.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     }
+    ],
+    "open_questions": [
+     "Exact response schema (field names, error body shape) is not specified by the task, so the team must choose one.",
+     "Author search semantics (exact vs substring, case sensitivity) are unspecified.",
+     "unittest, urllib.parse and json docs were not opened, so no sourced facts about them."
+    ]
+   },
+   "error": null,
+   "seconds": 17.0,
+   "tokens": 19565,
+   "meta": {
+    "consulted": [
+     "https://docs.python.org/3/library/http.server.html"
+    ],
+    "judged": 1
+   }
+  },
+  {
+   "id": "plan",
+   "kind": "plan",
+   "agent": "planner",
+   "deps": [
+    "research"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "goal": "Deliver a stdlib-only Python HTTP JSON API over an in-memory mock book database, with endpoints to list books, get a book by id (JSON 404 if missing) and search by author name, plus unit tests.",
+    "in_scope": [
+     "Single-module server using http.server (ThreadingHTTPServer + BaseHTTPRequestHandler), json and urllib.parse only",
+     "In-memory mock data: list of dicts with id (int), title, author (name string), year",
+     "GET /books returns 200 with a JSON array of all books",
+     "GET /books/{id} returns 200 with the book object; any id that does not resolve to a book (unknown or non-integer) returns the JSON 404 {\"error\": \"not found\"}",
+     "GET /books?author=<name> returns 200 with a JSON array of books whose author name contains the query, case-insensitive substring match (documented rule); empty array if nothing matches",
+     "Empty or missing author parameter: missing means plain list; empty value matches all books (consistent with substring rule)",
+     "Unknown routes return the same JSON 404",
+     "Responses use Content-Type application/json; charset=utf-8, UTF-8 encoded bytes and an accurate Content-Length",
+     "Data-layer functions (list, get by id, filter by author name) separate from the HTTP handler",
+     "Unit tests with unittest: data-layer tests (including author hit, miss, case-insensitivity, partial match), plus HTTP tests against a server on port 0 in a background thread using urllib.request (list, get existing, get missing 404, non-integer id 404, ?author= hit, miss, case-insensitive, URL-encoded name with spaces, unknown route 404)",
+     "Short README with run and test commands and the author search rule"
+    ],
+    "out_of_scope": [
+     "Fuzzy, regex or accent-insensitive author matching beyond case-insensitive substring",
+     "Write endpoints (POST/PUT/DELETE), authentication, pagination, sorting",
+     "Persistent database or any third-party dependency",
+     "Production hardening, TLS, HTTP/1.1 keep-alive tuning",
+     "Separate authors resource or endpoint",
+     "Combining author search with other filters"
+    ],
+    "milestones": [
+     "1. Define mock dataset and data-layer functions (list, get by id, filter by author name) with unit tests",
+     "2. Implement request handler: routing, query parsing, JSON helper that sends status, headers and body, 404 handling",
+     "3. Add server entry point (main, configurable port) and wire the data store via the server object",
+     "4. Write HTTP-level tests using a port-0 server in a background thread; ensure clean shutdown",
+     "5. Run the full test suite with python -m unittest, write README, final check that only the stdlib is used"
+    ],
+    "risks": [
+     "Default send_error returns HTML, so the 404 must be written manually as JSON; covered by a test on the Content-Type and body",
+     "The handler path includes the query string; mitigated by parsing with urllib.parse.urlsplit/parse_qs (which also decodes percent-encoding) and testing the author filter",
+     "Wrong Content-Length or non-UTF-8 encoding could hang or corrupt clients; encode body to bytes first and measure its length",
+     "Tests may be flaky from port clashes or unclosed servers; use port 0, and shutdown() and server_close() in tearDown",
+     "Unspecified schema and search semantics may differ from reader expectations; chosen rule (case-insensitive substring) documented in README and tests",
+     "Author values reflected in responses only in JSON body, never in headers (send_header does no CRLF validation)",
+     "http.server is not production-grade; documented as a demo only"
+    ],
+    "assumptions": [
+     "The task does not fix a schema, so the book fields and the error body {\"error\": \"not found\"} are our choice",
+     "Search by author is by author name via the author query parameter on /books, case-insensitive substring match, as suggested in the research brief",
+     "Any id that is not an existing integer id is treated as unknown and returns 404",
+     "Only GET is required; other methods may get the default server behavior",
+     "Python 3.7+ is available for ThreadingHTTPServer",
+     "The research brief's design suggestions are unsourced and chosen by us; the unittest, json and urllib.parse docs were not checked"
+    ]
+   },
+   "error": null,
+   "seconds": 22.5,
+   "tokens": 10486,
+   "meta": {
+    "consulted": [],
+    "judged": 2
+   }
+  },
+  {
+   "id": "prd",
+   "kind": "prd",
+   "agent": "product",
+   "deps": [
+    "plan"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "overview": "A stdlib-only Python HTTP JSON API over an in-memory mock book database. It offers list all books, get a book by id (JSON 404 if missing) and search books by author name (case-insensitive substring), with unittest unit tests and a short README. Out of scope: fuzzy, regex or accent-insensitive matching, write endpoints, auth, pagination, sorting, persistence, third-party dependencies, production hardening, TLS, keep-alive tuning, a separate authors resource, combining author search with other filters.",
+    "requirements": [
+     {
+      "id": "R1",
+      "text": "The service uses only the Python standard library (http.server ThreadingHTTPServer and BaseHTTPRequestHandler, json, urllib.parse; unittest and urllib.request in tests).",
+      "acceptance": "Static inspection of all imports in source and test files shows only standard-library modules; no requirements file lists third-party packages."
+     },
+     {
+      "id": "R2",
+      "text": "The mock database is an in-memory list of dicts, each with id (int), title (str), author (author name str) and year (int).",
+      "acceptance": "A data-layer test asserts every record has exactly these keys with the stated types, and the dataset has at least 3 books, with at least two sharing an author and at least one author name containing a space."
+     },
+     {
+      "id": "R3",
+      "text": "GET /books returns 200 with a JSON array of all books.",
+      "acceptance": "An HTTP test requests /books and asserts status 200 and that the parsed body is a list equal to the full dataset."
+     },
+     {
+      "id": "R4",
+      "text": "GET /books/{id} for an existing integer id returns 200 with that book object.",
+      "acceptance": "An HTTP test requests /books/1 and asserts status 200 and the body equals the book with id 1."
+     },
+     {
+      "id": "R5",
+      "text": "GET /books/{id} for an id that does not resolve to a book (unknown integer or non-integer) returns 404 with body {\"error\": \"not found\"}.",
+      "acceptance": "HTTP tests request /books/99999 and /books/abc and assert status 404 and parsed body == {\"error\": \"not found\"} for each."
+     },
+     {
+      "id": "R6",
+      "text": "GET /books?author=<name> returns 200 with a JSON array of books whose author name contains the query as a case-insensitive substring, or an empty array if none match. Percent-encoded values (e.g. spaces) are decoded. An empty author value matches all books; a missing author parameter returns the plain list.",
+      "acceptance": "HTTP tests assert: a full-name query returns exactly the matching books; a different-case query returns the same; a partial name matches; a URL-encoded name with spaces matches; a non-matching name returns status 200 and []; ?author= returns all books."
+     },
+     {
+      "id": "R7",
+      "text": "Unknown routes return the same JSON 404 {\"error\": \"not found\"}.",
+      "acceptance": "An HTTP test requests /nope and asserts status 404, JSON Content-Type and body {\"error\": \"not found\"}."
+     },
+     {
+      "id": "R8",
+      "text": "All responses, including 404s, have Content-Type application/json; charset=utf-8, a UTF-8 encoded body and an accurate Content-Length. Author values are never placed in headers.",
+      "acceptance": "HTTP tests for 200 and 404 responses assert the Content-Type header value and that Content-Length equals the number of body bytes read."
+     },
+     {
+      "id": "R9",
+      "text": "Data-layer functions (list all, get by id, filter by author name) are separate from the HTTP handler and callable without a server.",
+      "acceptance": "Unit tests call these functions directly and check: list returns all books; get by id returns a book or None for a missing id; filter returns matches for a hit, partial match and different case, and an empty list for a miss."
+     },
+     {
+      "id": "R10",
+      "text": "The server has a main entry point with a configurable port, and the data store is reachable via the server object.",
+      "acceptance": "Running the module with a port argument or option serves GET /books on that port; HTTP tests start the server on port 0 in a background thread and read server_port."
+     },
+     {
+      "id": "R11",
+      "text": "Unit tests run with python -m unittest, pass, and shut the server down cleanly (shutdown and server_close in tearDown).",
+      "acceptance": "python -m unittest exits with code 0 with all tests passing, and the process terminates without hanging."
+     },
+     {
+      "id": "R12",
+      "text": "A short README documents run and test commands, the book fields and error body, the author search rule, and that the server is a demo not production-grade.",
+      "acceptance": "README exists and contains the run command, the test command, the book fields with the error body, the case-insensitive substring author rule, and a demo-only note."
+     }
+    ]
+   },
+   "error": null,
+   "seconds": 18.2,
+   "tokens": 12063,
+   "meta": {
+    "consulted": [],
+    "judged": 2
+   }
+  },
+  {
+   "id": "spec",
+   "kind": "spec",
+   "agent": "architect",
+   "deps": [
+    "prd"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "design": "# Book API: technical spec (revised: search is by author name)\n\nThis revision follows the updated plan. Search now matches on the author **name** through `GET /books?author=<name>`. The match is a case-insensitive substring. The `author_id` field and the `?author_id=` filter have been removed.\n\nThe code uses the Python 3.7+ standard library only. There is no requirements file and there are no third-party packages. Layout from the workspace root:\n\n```\nbookapi/__init__.py      package marker; re-exports BookStore, BOOKS\nbookapi/data.py          mock dataset + data layer (no HTTP imports)\nbookapi/server.py        HTTP handler, server class, make_server, parse_args, main\nbookapi/__main__.py      `python3 -m bookapi` entry point\ntests/__init__.py        empty (makes tests discoverable by `python3 -m unittest`)\ntests/test_data.py       data-layer unit tests\ntests/test_server.py     HTTP-level tests (port-0 server in a background thread + module run test)\ntests/test_stdlib.py     static import check (stdlib only)\nREADME.md\n```\n\n## 1. Data layer: bookapi/data.py\nImports: `copy` only.\n\n`BOOKS: list[dict]` is the module-level mock dataset. Each record has exactly these keys: `id` (int), `title` (str), `author` (str, the author's name) and `year` (int). Use these exact records:\n1. {id:1, title:\"Pride and Prejudice\", author:\"Jane Austen\", year:1813}\n2. {id:2, title:\"Emma\", author:\"Jane Austen\", year:1815}\n3. {id:3, title:\"Nineteen Eighty-Four\", author:\"George Orwell\", year:1949}\n4. {id:4, title:\"Animal Farm\", author:\"George Orwell\", year:1945}\n5. {id:5, title:\"Cien a\u00f1os de soledad\", author:\"Gabriel Garc\u00eda M\u00e1rquez\", year:1967}\n\nIds are unique. Two authors each have two books, and every author name contains a space. The non-ASCII record checks that the body is UTF-8 and that Content-Length counts bytes.\n\n`class BookStore`:\n- `__init__(self, books=None)`: stores `copy.deepcopy(books if books is not None else BOOKS)` and keeps dataset order.\n- `list_books(self) -> list[dict]`: deep copies of all books, in dataset order.\n- `get_book(self, book_id: int) -> dict | None`: a deep copy of the book whose `id == book_id`, or None.\n- `books_by_author(self, name: str) -> list[dict]`: deep copies of the books where `name.casefold() in book[\"author\"].casefold()`, in dataset order.\n  - This is the documented search rule: a case-insensitive substring match.\n  - There is no trimming, regex, fuzzy matching or accent folding.\n  - An empty `name` matches every book. No match returns `[]`.\n\nCallers can never change the store's data through a returned object. Nothing in this layer knows about HTTP.\n\n## 2. HTTP layer: bookapi/server.py\nImports: `argparse`, `json`, `re`, `http.server` (ThreadingHTTPServer, BaseHTTPRequestHandler), `urllib.parse` (urlsplit, parse_qs), and `from bookapi.data import BookStore`.\n\nConstants:\n- `NOT_FOUND = {\"error\": \"not found\"}`\n- `CONTENT_TYPE = \"application/json; charset=utf-8\"`\n- `_ID_RE = re.compile(r\"[0-9]+\")`, used with fullmatch\n\n`class BookRequestHandler(BaseHTTPRequestHandler)`:\n- `log_message(self, format, *args)` is overridden to do nothing, so test output stays clean.\n- `_send_json(self, status: int, payload)`:\n  1. `body = json.dumps(payload, ensure_ascii=False).encode(\"utf-8\")`\n  2. `self.send_response(status)`\n  3. `self.send_header(\"Content-Type\", CONTENT_TYPE)`\n  4. `self.send_header(\"Content-Length\", str(len(body)))`\n  5. `self.end_headers()`\n  6. `self.wfile.write(body)`\n\n  Never use `send_error`, because it returns HTML. Request data, including author values, is never put into a header. It appears only in the JSON body.\n- `do_GET(self)`: `store = self.server.store`, `parts = urlsplit(self.path)`, `path = parts.path`. Routing:\n  - **`path == \"/books\"`**: parse `qs = parse_qs(parts.query, keep_blank_values=True)`. parse_qs decodes `%20` and `+` to spaces and decodes UTF-8 percent-escapes.\n    - If `\"author\"` is in qs, respond 200 with `store.books_by_author(qs[\"author\"][0])`. `?author=` gives `\"\"`, which returns all books. A name that matches nothing returns 200 with `[]`.\n    - Otherwise respond 200 with `store.list_books()`. Other query parameters are ignored.\n  - **`path` starts with `\"/books/\"`** and the remainder `seg` contains no \"/\":\n    - If `_ID_RE.fullmatch(seg)` and `store.get_book(int(seg))` is not None, respond 200 with the book.\n    - Otherwise respond 404 with NOT_FOUND. This covers non-integer ids, the empty segment in `/books/`, and unknown ids.\n  - **Anything else** (`/`, `/nope`, `/books/1/x`): respond 404 with NOT_FOUND.\n\n  Only GET is implemented. Other methods get the default http.server behavior.\n\n`class BookServer(ThreadingHTTPServer)`:\n- `daemon_threads = True`, `allow_reuse_address = True`\n- `__init__(self, server_address, store=None)`: calls `super().__init__(server_address, BookRequestHandler)`, then sets `self.store = store if store is not None else BookStore()`. The handler reaches the data store through `self.server.store`.\n\nFunctions:\n- `make_server(host=\"127.0.0.1\", port=0, store=None) -> BookServer`. Port 0 lets the OS pick a free port, which callers read from `server.server_port`.\n- `parse_args(argv=None) -> argparse.Namespace`: accepts `--host` (default \"127.0.0.1\") and `--port` (int, default 8000).\n- `main(argv=None) -> int`:\n  1. Parse the args and call `make_server`.\n  2. Run `print(f\"Serving on http://{host}:{server.server_port}\", flush=True)`. The flush is required by the subprocess test.\n  3. Call `serve_forever()`. On KeyboardInterrupt, do nothing.\n  4. In `finally`, call `server_close()`.\n  5. Return 0.\n\n## 3. bookapi/__main__.py\n```\nfrom bookapi.server import main\nraise SystemExit(main())\n```\nRun with `python3 -m bookapi --port 8000`.\n\n## 4. Tests (unittest; run with `python3 -m unittest -v` from the root)\n\n### tests/test_data.py\n- Every record in BOOKS has exactly the keys {id, title, author, year}, with types int/str/str/int. Use `type(x) is int` so bools are rejected.\n- `len(BOOKS) >= 3`.\n- At least one author name is shared by at least 2 books, and at least one author name contains a space.\n- Ids are unique.\n- `list_books() == BOOKS`.\n- `get_book(1)` returns book 1, and `get_book(99999)` returns None.\n- `books_by_author` cases, compared by ids:\n\n  | Query | Expected ids |\n  |---|---|\n  | \"Jane Austen\" (hit) | [1, 2] |\n  | \"jane austen\" and \"JANE AUSTEN\" (case) | [1, 2] |\n  | \"orwell\" (partial) | [3, 4] |\n  | \"Garc\u00eda\" and \"garc\u00eda\" (non-ASCII) | [5] |\n  | \"Tolkien\" (miss) | [] |\n  | \"\" (empty) | all ids |\n\n- Changing a returned dict or list does not change the store.\n- A custom dataset passed to the constructor is used.\n\n### tests/test_server.py\nFixture `class ServerTests`:\n- `setUp`: `self.server = make_server(port=0)`. Start `self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)`. Set `self.base = f\"http://127.0.0.1:{self.server.server_port}\"`.\n- `tearDown`: `self.server.shutdown()`, `self.server.server_close()`, `self.thread.join(timeout=5)`.\n\nHelper `get(path) -> (status, headers, body_bytes)`:\n- Uses `urllib.request.urlopen(self.base + path, timeout=5)`.\n- Catches `urllib.error.HTTPError` as `e`, reads `e.code`, `e.headers` and `e.read()`, then closes `e`.\n\nEvery case below asserts Content-Type == `application/json; charset=utf-8` and `int(Content-Length) == len(body)`.\n\nCases:\n- `/books`: 200, and the JSON equals `BOOKS`.\n- `/books/1`: 200, and the body equals book 1.\n- `/books/5`: 200, and the non-ASCII title and author round-trip.\n- 404s: `/books/99999`, `/books/abc`, `/books/` and `/nope` each return 404 with parsed body `{\"error\": \"not found\"}`.\n- Author search (build query strings with `urllib.parse.quote`):\n\n  | Request | Expected |\n  |---|---|\n  | `/books?author=Jane%20Austen` (full name, encoded space) | 200, ids [1, 2] |\n  | `/books?author=JANE+AUSTEN` (different case, `+` as space) | 200, ids [1, 2] |\n  | `/books?author=orw` (partial) | 200, ids [3, 4] |\n  | `/books?author=` + `quote(\"Gabriel Garc\u00eda\")` (spaces and UTF-8) | 200, ids [5] |\n  | `/books?author=Tolkien` (miss) | 200, `[]` |\n  | `/books?author=` (empty) | 200, equals BOOKS |\n\n- `parse_args([\"--port\",\"0\"]).port == 0`, the default port is 8000, and `--host` is accepted.\n- `self.server.store` is a BookStore.\n\n`class MainModuleTest` (R10, the module entry point). This test must not hang:\n1. Start `subprocess.Popen([sys.executable, \"-m\", \"bookapi\", \"--port\", \"0\"], cwd=<repo root via pathlib>, stdout=PIPE, stderr=PIPE, text=True)`.\n2. Read one stdout line and parse the port from `Serving on http://127.0.0.1:PORT`. An empty line means the server failed to start, and the test fails.\n3. GET `/books` returns 200 and equals BOOKS.\n4. In `finally`: `proc.terminate()` and `proc.wait(timeout=5)`. If the wait times out, call `proc.kill()`. Close the pipes.\n\n### tests/test_stdlib.py\nUses `ast` to parse every `.py` file under `bookapi/` and `tests/`. It collects the top-level module name of each Import/ImportFrom (skipping relative imports) and asserts each one is in this allowlist:\n\n{argparse, ast, copy, http, json, os, pathlib, re, subprocess, sys, threading, unittest, urllib, bookapi, tests}\n\nIt also asserts that there is no requirements.txt in the root.\n\n## 5. README.md\nMust cover:\n- Run command: `python3 -m bookapi --port 8000`\n- Test command: `python3 -m unittest -v`\n- An endpoints table: `GET /books`, `GET /books/{id}`, `GET /books?author=<name>`\n- The book fields with types: id int, title str, author str, year int\n- The error body `{\"error\": \"not found\"}`, used for unknown or non-integer ids and unknown routes\n- The author search rule: a case-insensitive substring match on the author name. Values are URL-decoded. An empty `author=` matches all books, and no match returns `[]`. There is no fuzzy or accent-insensitive matching.\n- A note that the server is a demo built on http.server and is not production-grade\n",
+    "work_items": [
+     {
+      "id": "W1",
+      "title": "Mock dataset and data layer with unit tests",
+      "description": "Build bookapi/data.py exactly as in design section 1.\n\n- BOOKS holds the 5 given records. Each has keys id, title, author and year. There is no author_id.\n- BookStore has list_books, get_book and books_by_author(name). books_by_author is a case-insensitive substring match on the author name using casefold. An empty name matches all books. All methods return deep copies.\n- bookapi/__init__.py re-exports BookStore and BOOKS. It must not import server.\n- tests/__init__.py is empty.\n- Write tests/test_data.py with the cases in design section 4: schema and types, at least 3 books, a shared author, an author name with a space, unique ids, list and get (hit and miss), and author hit, case, partial, non-ASCII, miss and empty. Also test that returned objects are isolated from the store and that a custom dataset is used.",
+      "files": [
+       "bookapi/__init__.py",
+       "bookapi/data.py",
+       "tests/__init__.py",
+       "tests/test_data.py"
+      ],
+      "covers": [
+       "R2",
+       "R9"
+      ],
+      "depends_on": []
+     },
+     {
+      "id": "W2",
+      "title": "HTTP handler, server class and entry point",
+      "description": "Build bookapi/server.py as in design section 2. It contains:\n- NOT_FOUND, CONTENT_TYPE and _ID_RE.\n- BookRequestHandler:\n  - log_message does nothing.\n  - _send_json writes UTF-8 bytes with an accurate Content-Length. It never calls send_error and never puts request data in headers.\n  - do_GET routes /books, /books?author=<name> and /books/{id}, and returns the JSON 404 for anything else. It parses the query with parse_qs(keep_blank_values=True) and passes the decoded author value to store.books_by_author.\n- BookServer(ThreadingHTTPServer), which holds .store.\n- make_server and parse_args (--host, --port).\n- main, which prints 'Serving on http://host:port' with flush=True.\n\nAdd bookapi/__main__.py so that `python3 -m bookapi --port N` serves. Use only the stdlib imports listed in the design.",
+      "files": [
+       "bookapi/server.py",
+       "bookapi/__main__.py"
+      ],
+      "covers": [
+       "R1",
+       "R3",
+       "R4",
+       "R5",
+       "R6",
+       "R7",
+       "R8",
+       "R10"
+      ],
+      "depends_on": [
+       "W1"
+      ]
+     },
+     {
+      "id": "W3",
+      "title": "HTTP-level tests",
+      "description": "Write tests/test_server.py as in design section 4.\n\nServerTests fixture and helper:\n- setUp starts make_server(port=0) with serve_forever in a daemon thread.\n- tearDown calls shutdown(), server_close() and join(timeout=5).\n- A get() helper handles HTTPError so the 404 status, headers and body can be read.\n\nServerTests cases:\n- /books returns the full list.\n- /books/1 returns book 1.\n- /books/5 round-trips UTF-8.\n- /books/99999, /books/abc, /books/ and /nope each return 404 with body {\"error\": \"not found\"}.\n- Author search, compared by ids:\n  - Jane%20Austen returns [1,2].\n  - JANE+AUSTEN returns [1,2].\n  - orw returns [3,4].\n  - quote('Gabriel Garc\u00eda') returns [5].\n  - Tolkien returns 200 and [].\n  - author= returns all books.\n- Content-Type and Content-Length == len(body) are checked on every response.\n- parse_args handles port and host.\n- server.store is a BookStore.\n\nMainModuleTest runs `sys.executable -m bookapi --port 0` through subprocess from the repo root. It reads the port from the first stdout line, GETs /books and checks the body equals BOOKS, then calls terminate and wait(timeout=5), with kill as a fallback.\n\nAll tests must pass under `python3 -m unittest -v` without hanging.",
+      "files": [
+       "tests/test_server.py"
+      ],
+      "covers": [
+       "R3",
+       "R4",
+       "R5",
+       "R6",
+       "R7",
+       "R8",
+       "R10",
+       "R11"
+      ],
+      "depends_on": [
+       "W2"
+      ]
+     },
+     {
+      "id": "W4",
+      "title": "README and stdlib-only import check",
+      "description": "Write README.md as in design section 5. It must include:\n- the run command (python3 -m bookapi --port 8000)\n- the test command (python3 -m unittest -v)\n- the endpoints, including GET /books?author=<name>\n- the book fields and types (id, title, author, year)\n- the error body {\"error\": \"not found\"}\n- the author search rule: a case-insensitive substring match on the author name; values are URL-decoded; an empty value matches all books; no match returns []\n- a note that the server is a demo and not production-grade\n\nWrite tests/test_stdlib.py. It uses ast to check that every import in bookapi/ and tests/ is in the allowlist from the design (which includes subprocess), and that there is no requirements.txt.",
+      "files": [
+       "README.md",
+       "tests/test_stdlib.py"
+      ],
+      "covers": [
+       "R1",
+       "R12",
+       "R11"
+      ],
+      "depends_on": [
+       "W2"
+      ]
+     }
+    ],
+    "test_command": "python3 -m unittest -v",
+    "run_command": "python3 -m bookapi --port 8000"
+   },
+   "error": null,
+   "seconds": 110.3,
+   "tokens": 32116,
+   "meta": {
+    "consulted": [],
+    "judged": 2
+   }
+  },
+  {
+   "id": "impl:W1",
+   "kind": "implement",
+   "agent": "engineer",
+   "deps": [
+    "spec"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "summary": "I updated W1 to the revised plan (search by author name), but the full suite does not pass yet: 35 tests ran and 2 errored. Both errors are in the HTTP tests in tests/test_server.py (W3) and are caused by bookapi/server.py (W2). Neither is my file to change.\n\nWhy the 2 tests fail: bookapi/server.py still handles the old ?author_id= filter. It reads qs[\"author_id\"] and calls store.books_by_author(int(v)). books_by_author now takes an author name, so the server crashes on that request and closes the connection without replying. The failing tests are test_filter_by_author_hit and test_filter_by_author_misses (the author_id=999 case); both also test the old author_id behaviour. W2 and W3 need to be redone to the revised spec: ?author=<name>, read with parse_qs(keep_blank_values=True) and passed straight to books_by_author.\n\nWhat I changed:\n- bookapi/data.py: imports only copy. BOOKS has the 5 records from the spec with exactly id, title, author and year; author_id is gone. books_by_author(name) matches part of the author's name, ignoring case (name.casefold() in author.casefold()). There is no trimming, regex, fuzzy matching or accent folding. An empty name matches every book and no match returns []. list_books, get_book and books_by_author return copies in dataset order, so callers can't change the store. Nothing in the file knows about HTTP.\n- tests/test_data.py: rewritten with 23 tests covering design section 4:\n  - every record has exactly the four keys with the right types (checked with type(x) is int, so True/False don't count as numbers), and no record has author_id\n  - at least 3 books, an author shared by two books, an author name with a space, and unique ids\n  - list_books() == BOOKS; get_book(1) returns book 1 and get_book(99999) returns None\n  - name search, compared by ids: \"Jane Austen\" gives [1,2]; \"jane austen\" and \"JANE AUSTEN\" give [1,2]; \"orwell\" gives [3,4]; \"Garc\u00eda\" and \"garc\u00eda\" give [5]; \"Tolkien\" gives []; \"\" gives all books\n  - changing a returned list, book or search result, or the list passed to the constructor, leaves the store unchanged\n  - a custom dataset is used, and an empty one works\n  - the package re-exports BOOKS and BookStore\n  I also removed the collections import, which isn't on the allowed import list.\n- bookapi/__init__.py (re-exports BOOKS and BookStore, doesn't import the server) and tests/__init__.py (empty) were already right and are unchanged.\n\nI still haven't added the id to the 404 body, as an earlier note asked. The spec requires the body to be exactly {\"error\": \"not found\"}.",
+    "tests": "Command: `python3 -m unittest -v` (workspace root). Outcome: Ran 35 tests, FAILED (errors=2).\n- Passing: all 23 tests in tests.test_data and all 3 in tests.test_stdlib (`python3 -m unittest -v tests.test_data` gives \"Ran 23 tests ... OK\"; tests.test_stdlib gives \"Ran 3 tests ... OK\").\n- Failing: tests.test_server.ServerTestCase.test_filter_by_author_hit and test_filter_by_author_misses (query='author_id=999'). Both raise http.client.RemoteDisconnected: the server crashes on the request because bookapi/server.py (W2) still calls books_by_author(int(author_id)). These files belong to W2 and W3 and need to be redone to the revised spec (?author=<name>)."
+   },
+   "error": null,
+   "seconds": 75.6,
+   "tokens": 88816,
+   "meta": {
+    "item": {
+     "id": "W1",
+     "title": "Mock dataset and data layer with unit tests",
+     "description": "Build bookapi/data.py exactly as in design section 1.\n\n- BOOKS holds the 5 given records. Each has keys id, title, author and year. There is no author_id.\n- BookStore has list_books, get_book and books_by_author(name). books_by_author is a case-insensitive substring match on the author name using casefold. An empty name matches all books. All methods return deep copies.\n- bookapi/__init__.py re-exports BookStore and BOOKS. It must not import server.\n- tests/__init__.py is empty.\n- Write tests/test_data.py with the cases in design section 4: schema and types, at least 3 books, a shared author, an author name with a space, unique ids, list and get (hit and miss), and author hit, case, partial, non-ASCII, miss and empty. Also test that returned objects are isolated from the store and that a custom dataset is used.",
+     "files": [
+      "bookapi/__init__.py",
+      "bookapi/data.py",
+      "tests/__init__.py",
+      "tests/test_data.py"
+     ],
+     "covers": [
+      "R2",
+      "R9"
+     ],
+     "depends_on": []
+    },
+    "consulted": [],
+    "judged": 2
+   }
+  },
+  {
+   "id": "impl:W2",
+   "kind": "implement",
+   "agent": "engineer",
+   "deps": [
+    "spec",
+    "impl:W1"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "summary": "I changed `bookapi/server.py` so book search now works by author name, as the revised plan asks. The full test command still fails: 4 of 35 tests fail. All 4 are in `tests/test_server.py`, which is W3's file and still tests the old `?author_id=` filter. A separate check against a live server passed all 17 cases.\n\n**What changed:** `GET /books?author=<name>` now passes the decoded name to `store.books_by_author`. That does a case-insensitive substring match, so an empty `author=` returns all books and a name that matches nothing returns 200 with `[]`. I removed the old `?author_id=` handling and its regex. Other query parameters are ignored, so `?author_id=...` now just returns the full list.\n\n**What didn't change:**\n- `/books/{id}` returns the book, or 404 with exactly `{\"error\": \"not found\"}` if the id is unknown or not a number. Unknown routes return the same 404.\n- Every response is sent as `application/json; charset=utf-8`, the body is UTF-8, and Content-Length is its length in bytes.\n- `send_error` is never used, and request data never goes into a header.\n- `BookServer` keeps the data store on `.store`. `make_server`, `parse_args` (`--host`, `--port`) and `main` (prints `Serving on http://host:port` with `flush=True`) are unchanged, and so is `__main__.py`.\n- The only imports are the standard-library ones the design lists, plus `bookapi.data`.\n\n**What W3 needs to do:** In `tests/test_server.py`, replace `test_filter_by_author_hit` and `test_filter_by_author_misses` with the `?author=` cases from design section 4 (Jane%20Austen, JANE+AUSTEN, orw, quote('Gabriel Garc\u00eda'), Tolkien and empty). Until then, the full test command will keep failing. I didn't edit that file because it belongs to W3.\n\n**Not done on purpose:** an earlier run asked for the requested id to be included in the 404 body. I left it out because R5, R7 and the design require the body to be exactly `{\"error\": \"not found\"}`.",
+    "tests": "1) `python3 -m unittest -v` from the workspace root: ran 35 tests, FAILED (failures=4), so the test command does not pass yet. The 4 failures are W3's old tests in `tests/test_server.py`. `test_filter_by_author_hit` expects `/books?author_id=2` to return ids [3,4], and `test_filter_by_author_misses` expects `author_id=999`, `author_id=abc` and an empty `author_id=` to return []. That filter was removed in the revised plan, so those requests now return the full list. All the other tests passed, including the remaining HTTP tests.\n\n2) `python3 -m unittest tests.test_data tests.test_stdlib`: ran 26 tests, OK.\n\n3) `python3 smoke_tmp.py`, a temporary script that I deleted afterwards. Result: SMOKE OK, exit 0. It started `make_server(port=0)` in a background thread and requested 17 paths. For each one it checked the status, the parsed body, the Content-Type, and that Content-Length equals the number of body bytes.\n- **Books:** /books, /books/1 and /books/5 (non-ASCII) returned 200 with the right body.\n- **404s:** /books/99999, /books/abc, /books/, /nope, / and /books/1/x each returned 404 with `{\"error\": \"not found\"}`.\n- **Author search, compared by ids:**\n  - `?foo=1` and `?author=` returned all books.\n  - `?author=Tolkien` returned 200 with [].\n  - `Jane%20Austen` and `JANE+AUSTEN` returned [1,2].\n  - `orw` returned [3,4].\n  - `quote('Gabriel Garc\u00eda')` and `garc%C3%ADa` returned [5].\n\nThe script also checked parse_args (port 0, default port 8000, --host) and that `server.store` is a BookStore. It then started `python3 -m bookapi --port 0` as a separate process, read the port from the \"Serving on\" line, and got 200 with the full book list from /books. That process was then stopped with terminate and wait, and nothing hung."
+   },
+   "error": null,
+   "seconds": 88.2,
+   "tokens": 165997,
+   "meta": {
+    "item": {
+     "id": "W2",
+     "title": "HTTP handler, server class and entry point",
+     "description": "Build bookapi/server.py as in design section 2. It contains:\n- NOT_FOUND, CONTENT_TYPE and _ID_RE.\n- BookRequestHandler:\n  - log_message does nothing.\n  - _send_json writes UTF-8 bytes with an accurate Content-Length. It never calls send_error and never puts request data in headers.\n  - do_GET routes /books, /books?author=<name> and /books/{id}, and returns the JSON 404 for anything else. It parses the query with parse_qs(keep_blank_values=True) and passes the decoded author value to store.books_by_author.\n- BookServer(ThreadingHTTPServer), which holds .store.\n- make_server and parse_args (--host, --port).\n- main, which prints 'Serving on http://host:port' with flush=True.\n\nAdd bookapi/__main__.py so that `python3 -m bookapi --port N` serves. Use only the stdlib imports listed in the design.",
+     "files": [
+      "bookapi/server.py",
+      "bookapi/__main__.py"
+     ],
+     "covers": [
+      "R1",
+      "R3",
+      "R4",
+      "R5",
+      "R6",
+      "R7",
+      "R8",
+      "R10"
+     ],
+     "depends_on": [
+      "W1"
+     ]
+    },
+    "consulted": [
+     "bookapi/data.py",
+     "bookapi/__init__.py",
+     "bookapi/server.py",
+     "bookapi/data.py",
+     "bookapi/__main__.py"
+    ],
+    "judged": 2
+   }
+  },
+  {
+   "id": "impl:W3",
+   "kind": "implement",
+   "agent": "engineer",
+   "deps": [
+    "spec",
+    "impl:W2"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "summary": "I've rewritten `tests/test_server.py` for the revised plan, where search is by author name. All my new tests pass, but the full suite still has one failure. It comes from `tests/test_stdlib.py` (W4's file, which I can't edit): its import allowlist is out of date and doesn't include `subprocess`. The design lists `subprocess` as allowed, and the new module test needs it.\n\n**What changed:**\n- **Removed:** the old `author_id` tests. The revised spec drops that filter.\n- **Author search tests:** each case checks the returned book ids.\n\n  | Request | Expected ids |\n  |---|---|\n  | `Jane%20Austen` | [1, 2] |\n  | `JANE+AUSTEN` | [1, 2] |\n  | `orw` | [3, 4] |\n  | `quote(\"Gabriel Garc\u00eda\")` | [5] |\n  | `Tolkien` | `[]` with status 200 |\n  | `author=` (empty) | the full `BOOKS` list |\n\n- **New `MainModuleTest`:** it starts `python -m bookapi --port 0` as a separate process from the repo root and reads the port from the first line of output. It then fetches `/books` and checks the status, headers and that the body equals `BOOKS`. Afterwards it stops the process (waiting up to 5 seconds, then killing it if needed) and closes the pipes. If the server fails to start, the test fails instead of hanging.\n- **Kept as before:**\n  - A `ServerTests` class (renamed from `ServerTestCase`) that starts a server on a free port in a background thread and shuts it down cleanly after each test.\n  - A `get()` helper that also returns the status, headers and body of 404 responses.\n  - Checks on every response that Content-Type is `application/json; charset=utf-8` and that Content-Length matches the body size.\n  - Tests for `/books`, `/books/1`, and the accented characters in `/books/5`.\n  - 404 tests for `/books/99999`, `/books/abc`, `/books/` and `/nope`, plus `/` and `/books/1/x`.\n  - `parse_args` (port and host) and `server.store` being a `BookStore`.\n\n**To fix the failure:** W4 needs to add `subprocess` to `ALLOWED` in `tests/test_stdlib.py`. That file also allows `collections`, which isn't in the design's list but is needed because `tests/test_data.py` imports it. I didn't try to hide the import from the check.\n\n**404 body:** I didn't apply an earlier user request to include the id in the 404 body. Requirements R5 and R7 say the body must be exactly `{\"error\": \"not found\"}`, and the tests check for that.",
+    "tests": "1. `timeout 120 python3 -m unittest -v` from the workspace root (the spec's test command): exit code 1. 37 tests ran in 5.1s, with 36 passing and 1 failing. The failure is `tests.test_stdlib.StdlibOnlyTest.test_all_imports_in_allowlist`, which reports `tests/test_server.py:7: subprocess`. That's because W4's allowlist doesn't include `subprocess` yet, though the design allows it. Nothing hung.\n2. `timeout 120 python3 -m unittest tests.test_server tests.test_data -v`: exit code 0, 34 tests passed in 5.1s. That covers all 11 tests in `tests/test_server.py`, including `MainModuleTest`, which starts and stops the server process cleanly."
+   },
+   "error": null,
+   "seconds": 82.3,
+   "tokens": 125386,
+   "meta": {
+    "item": {
+     "id": "W3",
+     "title": "HTTP-level tests",
+     "description": "Write tests/test_server.py as in design section 4.\n\nServerTests fixture and helper:\n- setUp starts make_server(port=0) with serve_forever in a daemon thread.\n- tearDown calls shutdown(), server_close() and join(timeout=5).\n- A get() helper handles HTTPError so the 404 status, headers and body can be read.\n\nServerTests cases:\n- /books returns the full list.\n- /books/1 returns book 1.\n- /books/5 round-trips UTF-8.\n- /books/99999, /books/abc, /books/ and /nope each return 404 with body {\"error\": \"not found\"}.\n- Author search, compared by ids:\n  - Jane%20Austen returns [1,2].\n  - JANE+AUSTEN returns [1,2].\n  - orw returns [3,4].\n  - quote('Gabriel Garc\u00eda') returns [5].\n  - Tolkien returns 200 and [].\n  - author= returns all books.\n- Content-Type and Content-Length == len(body) are checked on every response.\n- parse_args handles port and host.\n- server.store is a BookStore.\n\nMainModuleTest runs `sys.executable -m bookapi --port 0` through subprocess from the repo root. It reads the port from the first stdout line, GETs /books and checks the body equals BOOKS, then calls terminate and wait(timeout=5), with kill as a fallback.\n\nAll tests must pass under `python3 -m unittest -v` without hanging.",
+     "files": [
+      "tests/test_server.py"
+     ],
+     "covers": [
+      "R3",
+      "R4",
+      "R5",
+      "R6",
+      "R7",
+      "R8",
+      "R10",
+      "R11"
+     ],
+     "depends_on": [
+      "W2"
+     ]
+    },
+    "consulted": [
+     "bookapi/server.py",
+     "bookapi/__init__.py",
+     "bookapi/server.py",
+     "tests/test_server.py",
+     "bookapi/data.py",
+     "tests/test_stdlib.py"
+    ],
+    "judged": 2
+   }
+  },
+  {
+   "id": "impl:W4",
+   "kind": "implement",
+   "agent": "engineer",
+   "deps": [
+    "spec",
+    "impl:W2"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 3,
+   "version": 3,
+   "feedback": [],
+   "result": {
+    "summary": "I fixed the error the audit found in README.md: the Author search section no longer claims that an unencoded space works. The full test suite still passes.\n\n- **The fix:** the list of examples that return the two Jane Austen books is now `author=jane%20austen`, `author=JANE+AUSTEN` and `author=Jane%20Austen`. I removed `author=Jane Austen` from it.\n- **New note:** spaces in the query must be written as `%20` or `+`. With a plain space (for example `author=Jane Austen`), the built-in server rejects the request with an HTTP 400 HTML page, not JSON, before it reaches the API.\n- **Unchanged:** the rest of the README (run and test commands, endpoints table, book fields and types, error body, the rest of the search rule, demo-only note) and tests/test_stdlib.py. The audit found tests/test_stdlib.py meets the design.\n\nI still haven't added the id to the 404 body, as an earlier user note asked. The requirements and design say the body must be exactly `{\"error\": \"not found\"}`, and that is what the README documents.",
+    "tests": "From the project root I ran `python3 -m unittest`. All 37 tests passed in about 5s without hanging (\"Ran 37 tests \u2026 OK\"), including the 3 in tests/test_stdlib.py. The `exit=0` that printed came from `tail` in my pipe, not from the test run, so the \"OK\" line is what shows it passed. I also searched the README with grep to confirm the unencoded form now appears only in the warning note."
+   },
+   "error": null,
+   "seconds": 106.3,
+   "tokens": 174251,
+   "meta": {
+    "item": {
+     "id": "W4",
+     "title": "README and stdlib-only import check",
+     "description": "Write README.md as in design section 5. It must include:\n- the run command (python3 -m bookapi --port 8000)\n- the test command (python3 -m unittest -v)\n- the endpoints, including GET /books?author=<name>\n- the book fields and types (id, title, author, year)\n- the error body {\"error\": \"not found\"}\n- the author search rule: a case-insensitive substring match on the author name; values are URL-decoded; an empty value matches all books; no match returns []\n- a note that the server is a demo and not production-grade\n\nWrite tests/test_stdlib.py. It uses ast to check that every import in bookapi/ and tests/ is in the allowlist from the design (which includes subprocess), and that there is no requirements.txt.",
+     "files": [
+      "README.md",
+      "tests/test_stdlib.py"
+     ],
+     "covers": [
+      "R1",
+      "R12",
+      "R11"
+     ],
+     "depends_on": [
+      "W2"
+     ]
+    },
+    "consulted": [
+     "README.md",
+     "tests/test_stdlib.py",
+     "README.md"
+    ],
+    "judged": 3
+   }
+  },
+  {
+   "id": "audit",
+   "kind": "audit",
+   "agent": "auditor",
+   "deps": [
+    "research",
+    "plan",
+    "prd",
+    "spec",
+    "impl:W1",
+    "impl:W2",
+    "impl:W3",
+    "impl:W4"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 3,
+   "version": 3,
+   "feedback": [],
+   "result": {
+    "passed": true,
+    "findings": []
+   },
+   "error": null,
+   "seconds": 185.1,
+   "tokens": 288978,
+   "meta": {}
+  }
+ ]
+}
