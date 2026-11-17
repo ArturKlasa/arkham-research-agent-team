@@ -17,7 +17,7 @@ export ANTHROPIC_API_KEY=...
 ollama pull gpt-oss:20b
 .venv/bin/python -m harness --provider openai --model gpt-oss:20b      # --base-url defaults to Ollama
 
-# 3. No model at all: a scripted team that makes every kind of mistake on purpose
+# 3. No model at all: a scripted team that makes every kind of mistake on purpose (until memory holds its lessons, see below)
 .venv/bin/python -m harness --provider scripted
 ```
 
@@ -225,6 +225,10 @@ runs/<session>/artifacts/      research.md, plan.md, prd.md, spec.md, impl-W1.md
 runs/<session>/workspace/      the solution that was built
 ```
 
+Lessons and notes live in `memory/memory.jsonl`, shared by every session. The scripted team stops making a mistake once its lesson is there, so to watch it make every mistake again, start from an empty memory: `HARNESS_MEMORY=/tmp/demo/memory.jsonl` (or delete `memory/`).
+
+Every setting in `harness/config.py` can be set as `HARNESS_<NAME>` (for example `HARNESS_MAX_AUDIT_CYCLES=1`, `HARNESS_RUNS=/tmp/runs`); command-line flags beat the environment, which beats the defaults. `--sandbox none` runs generated code on the host without isolation and is meant only for machines with neither bubblewrap nor Docker.
+
 ## Bonus items
 
 | Item | Where | What it does |
@@ -262,7 +266,7 @@ The test `test_a_poisoned_reference_file_cannot_make_an_obedient_agent_leak_a_se
 
 ## A recorded run
 
-`examples/books-api/` is one unedited session against the real models (Sonnet 5.5, with Opus 5.5 as the architect). The task was a standard-library HTTP JSON API over a mock book database, followed by `/status` and a one-off question. `transcript.txt` is the terminal output; `artifacts/`, `workspace/`, `board.json` and `trail.jsonl` are the session files, with absolute paths made relative. It shows three things:
+`examples/books-api/` is one unedited session against the real models (Sonnet 5.5, with Opus 5.5 as the architect), started with the lessons earlier development runs had left in memory (`examples/self-improvement/` starts from empty memory). The task was a standard-library HTTP JSON API over a mock book database, followed by `/status` and a one-off question. `transcript.txt` is the terminal output; `artifacts/`, `workspace/`, `board.json` and `trail.jsonl` are the session files, with absolute paths made relative. It shows three things:
 
 - The researcher tried a documentation URL it had made up, was refused by the fetch allow-list, searched for the page and then fetched it.
 - The first audit found that the plan had narrowed "search by author" to an author id. The run went back to the plan and redid everything after it. The second audit caught a README example that would not work as written, and only that work item was redone. The third audit passed.
