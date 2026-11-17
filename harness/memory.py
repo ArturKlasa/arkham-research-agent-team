@@ -11,12 +11,14 @@ when a task is handed to an agent:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import math
 import os
 import re
 import time
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -40,31 +42,34 @@ class Memory:
         self._load()
 
     def _load(self) -> None:
-        """Re-read the file: other sessions share it, so every write starts from what is on disk."""
         self.items = list(read_jsonl(self.path))
 
-    def _save(self) -> None:
+    @contextmanager
+    def _update(self):
+        """Read, change, write as one step: sessions share this file, so a lock keeps one from undoing another's write."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text("".join(json.dumps(m) + "\n" for m in self.items))
-        os.replace(tmp, self.path)
+        with open(self.path.with_suffix(".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # released when the lock file closes
+            self._load()
+            yield
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text("".join(json.dumps(m) + "\n" for m in self.items))
+            os.replace(tmp, self.path)
 
     def lesson(self, role: str, rule: str, text: str, run: str) -> None:
         """Record that `role` violated `rule`. Repeats strengthen the existing lesson instead of duplicating it."""
-        self._load()
-        for m in self.items:
-            if m["kind"] == "lesson" and m["role"] == role and m["key"] == rule:
-                m.update(hits=m["hits"] + 1, text=text, ts=time.time())
-                break
-        else:
-            self.items.append({"kind": "lesson", "role": role, "key": rule, "text": text, "hits": 1, "run": run, "ts": time.time()})
-        self._save()
+        with self._update():
+            for m in self.items:
+                if m["kind"] == "lesson" and m["role"] == role and m["key"] == rule:
+                    m.update(hits=m["hits"] + 1, text=text, ts=time.time())
+                    break
+            else:
+                self.items.append({"kind": "lesson", "role": role, "key": rule, "text": text, "hits": 1, "run": run, "ts": time.time()})
 
     def note(self, kind: str, role: str, text: str, run: str) -> None:
-        self._load()
-        if not any(m["kind"] == kind and m["text"] == text for m in self.items):
-            self.items.append({"kind": kind, "role": role, "key": "", "text": text, "hits": 1, "run": run, "ts": time.time()})
-            self._save()
+        with self._update():
+            if not any(m["kind"] == kind and m["text"] == text for m in self.items):
+                self.items.append({"kind": kind, "role": role, "key": "", "text": text, "hits": 1, "run": run, "ts": time.time()})
 
     def recall(self, role: str, query: str, exclude_run: str = "", k: int = 3) -> list[str]:
         """What `role` should know before starting on `query`: its lessons, plus the most relevant notes."""

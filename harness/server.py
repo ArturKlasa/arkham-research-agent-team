@@ -17,7 +17,7 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .events import Block, render
+from .events import Halt, render
 
 PAGE = """<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -72,9 +72,9 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
     stop = threading.Event()
     bus = orchestrator.engine.bus
 
-    def halt(event):  # the stop button is just a hook that vetoes the next task
+    def halt(event):  # the stop button is just a hook that pauses before the next task
         if stop.is_set():
-            raise Block("stopped by the operator")
+            raise Halt("stopped by the operator; say resume to continue")
 
     bus.on(halt, "task_start")
 
@@ -91,7 +91,7 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
             self.wfile.write(data)
 
         def authorized(self) -> bool:
-            ok = hmac.compare_digest(self.headers.get("Authorization", ""), f"Bearer {token}")
+            ok = hmac.compare_digest(self.headers.get("Authorization", "").encode(), f"Bearer {token}".encode())  # bytes: any header value compares
             if not ok:
                 self.reply(401, "missing or invalid token")
             return ok

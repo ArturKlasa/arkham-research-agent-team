@@ -26,7 +26,7 @@ from pathlib import Path
 from . import auditor
 from .agent import Tool, run_agent
 from .board import Board, Task
-from .events import Block, Bus
+from .events import Block, Bus, Halt
 from .experts import ANSWER, ASK, EXPERTS, READ, TEXT, obj
 from .llm import FatalError
 from .memory import Memory
@@ -81,11 +81,24 @@ class Engine:
         if task is None or task.kind in ("audit", "adhoc"):
             raise ValueError(f"unknown task {task_id!r}; choose one of {[t.id for t in self.board.pipeline()]}")
         self.board.meta.update(audit_cycles=0, accepted=False)
-        self.board.invalidate(task_id, [f"The user asked for this change: {feedback}"])
+        self.board.meta.setdefault("changes", []).append({"task": task_id, "text": feedback})
+        self.board.invalidate(task_id, [])
         self.memory.note("feedback", task.agent, f"A user asked for this change at the {task.kind} step: {feedback}", self.dir.name)
         return self.run()
 
+    def changes(self, task: Task) -> str:
+        """The user's change requests that bind a task (made on it or on a step upstream of it), as a brief section.
+
+        They are kept for the whole session, unlike feedback (cleared once a task succeeds), so a later
+        re-run cannot quietly undo a change and the auditor knows the deviation was asked for.
+        """
+        asked = [c["text"] for c in self.board.meta.get("changes", []) if task.id == c["task"] or task.id in self.board.dependents(c["task"])]
+        return "# Changes the user asked for (they override the original task and earlier steps where they differ)\n" + "\n".join(f"- {text}" for text in asked) if asked else ""
+
     def approve(self) -> dict:
+        status = self.report()["status"]
+        if not status.startswith("completed"):
+            raise ValueError(f"there is no finished result to approve: the run is {status}")
         self.board.meta["accepted"] = True
         self.board.save()
         return self.report()
@@ -118,7 +131,7 @@ class Engine:
                 task.result, task.status, task.version, task.feedback = result, "done", task.version + 1, []
                 self._finish(task)
                 self.bus.emit("task_done", seconds=round(time.time() - started, 1))
-            except KeyboardInterrupt:  # leave the task runnable so `resume` picks it up
+            except (KeyboardInterrupt, Halt):  # leave the task runnable so `resume` picks it up
                 task.status, task.attempts = ("failed" if task.kind == "adhoc" else "pending"), task.attempts - 1
                 self.bus.emit("interrupted")
                 raise
@@ -136,7 +149,9 @@ class Engine:
     def delegate(self, task: Task) -> dict:
         """Hand a task to its expert and return the accepted submission."""
         expert = EXPERTS[task.agent]
-        task.meta["consulted"] = []  # filled by the tools; read by the grounding rules
+        # Filled by the tools; read by the grounding rules. A revision keeps the log of the accepted run it builds on,
+        # so the sources of findings it keeps count as opened without fetching them all again.
+        task.meta["consulted"] = list(task.meta.get("consulted", [])) if task.result else []
         messages = [{"role": "user", "content": self.handoff(task)}]
         schema = ANSWER if task.kind == "adhoc" else expert.schema
         return run_agent(self.llm, self.bus, self.cfg, expert.system, messages, self._tools(task, expert), schema, lambda payload: self.gate(task, payload))
@@ -156,12 +171,13 @@ class Engine:
                 parts.append(f"# Your previous submission (revise it rather than starting over)\n{json.dumps(task.result, indent=1)}")
         if self.ws.sources:
             parts.append("# Reference files\nRead-only reference material is available under sources/.")
+        parts.append(self.changes(task))
         if task.feedback:
             parts.append("# Feedback you must address\n" + "\n".join(f"- {note}" for note in task.feedback))
         recalled = self.memory.recall(task.agent, task.meta.get("question") or project, exclude_run=self.dir.name)
         if recalled:
             parts.append("# Lessons and notes from earlier runs\n" + "\n".join(f"- {note}" for note in recalled))
-        return "\n\n".join(parts)
+        return "\n\n".join(filter(None, parts))
 
     def gate(self, task: Task, payload: dict) -> list[str]:
         """Checked rules, applied the moment an expert submits. Violations go back to the expert and into memory."""

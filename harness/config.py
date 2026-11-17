@@ -1,4 +1,4 @@
-"""Settings. Every field can be set with a HARNESS_<NAME> environment variable."""
+"""Settings. `Config.load` also reads a HARNESS_<NAME> environment variable for every field."""
 
 from __future__ import annotations
 
@@ -33,8 +33,12 @@ class Config:
     memory: Path = Path("memory/memory.jsonl")  # lessons and notes shared by all sessions
     sources: Path | None = None  # optional read-only reference files the agents may research
 
-    def __post_init__(self):
-        for f in fields(self):
+    @classmethod
+    def load(cls, **explicit) -> Config:
+        """Explicit arguments beat the environment, which beats the defaults."""
+        env = {}
+        for f in fields(cls):
             raw = os.environ.get(f"HARNESS_{f.name.upper()}")
-            if raw is not None and getattr(self, f.name) == f.default:  # explicit arguments beat the environment
-                setattr(self, f.name, (Path if f.default is None else type(f.default))(raw))
+            if raw is not None:
+                env[f.name] = (Path if f.default is None else type(f.default))(raw)
+        return cls(**{**env, **explicit})

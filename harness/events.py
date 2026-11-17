@@ -20,11 +20,19 @@ class Block(Exception):
     """Raised by a hook to veto a `task_start` or `pre_tool` event."""
 
 
+class Halt(Block):
+    """Raised by a `task_start` hook to pause the run: the task stays runnable and `resume` continues."""
+
+
 class Bus:
     def __init__(self, trail: Path):
         self.trail = trail
         trail.parent.mkdir(parents=True, exist_ok=True)
-        self.seq = len(trail.read_text().splitlines()) if trail.exists() else 0
+        written = trail.read_text() if trail.exists() else ""
+        if written and not written.endswith("\n"):  # a crash tore the last line: end it, or the next event joins it
+            with trail.open("a") as f:
+                f.write("\n")
+        self.seq = len(written.splitlines())
         self.hooks: list[tuple[tuple[str, ...], object]] = []
         self.context: dict = {}  # who is acting: task, agent, attempt
 

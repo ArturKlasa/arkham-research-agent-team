@@ -49,16 +49,23 @@ def sweep(eng) -> list[dict]:
 
 
 def run_suite(eng) -> list[dict]:
-    """Run the spec's test command and blame the work items whose files show up in the failure output."""
+    """Run the spec's test command. A failure is blamed on the work items whose files show up in the output."""
     command = eng.board.tasks["spec"].result["test_command"]
     code, output = run_sandboxed(eng.cfg, eng.ws.root, command)
     eng.bus.emit("suite", command=command, exit_code=code, output=output[-3000:])
-    if code == 0:
+    tested = re.search(r"\bRan [1-9]\d* tests?\b|\b[1-9]\d* passed\b", output)  # unittest's summary line, or pytest's
+    if code == 0 and tested:
         return []
     builders = [t for t in eng.board.pipeline() if t.kind == "implement"]
-    named = [t for t in builders if any(re.search(r"(?<![\w-])" + re.escape(f), output) for f in t.meta["item"]["files"])]
-    # A traceback names the test file, but the defect may be in code the test exercises: include what the named items build on.
-    blamed = {t.id for t in named} | {dep for t in named for dep in t.deps if dep != "spec"}
+    if not tested and (code == 0 or "Ran 0 tests" in output):
+        # A suite that tests nothing proves nothing. The spec owns the command and the test layout; the test files may be at fault too.
+        evidence = f"`{command}` exited with code {code} without running a single test:\n{output[-3000:]}"
+        fix = "Make test_command run the unittest suite from the workspace root, and make the test files discoverable by it (test*.py with TestCase classes)."
+        owners = [t.id for t in builders if any("test" in f.rsplit("/", 1)[-1] for f in t.meta["item"]["files"])]
+        return [_finding(SUITE.id, task_id, evidence, fix) for task_id in ["spec"] + owners]
+    named = {t.id for t in builders if any(re.search(r"(?<![\w-])" + re.escape(f), output) for f in t.meta["item"]["files"])}
+    # A traceback names the test file, but the defect may be in code the test exercises: include everything the named items build on.
+    blamed = named | {t.id for t in builders if eng.board.dependents(t.id) & named}
     evidence = f"`{command}` exited with code {code}:\n{output[-3000:]}"
     return [_finding(SUITE.id, t.id, evidence, "Run the full test command and make it pass before submitting.") for t in builders if t.id in blamed or not named]
 
@@ -71,14 +78,17 @@ def judge(eng, task) -> list[dict]:
     auditor = EXPERTS["auditor"]
     upstream = {dep: eng.board.tasks[dep].result for dep in EXPERTS[task.agent].needs}
     brief = "\n\n".join(
-        [
+        part
+        for part in [
             f"# Project task\n{eng.board.meta['task']}",
             f"# Step under audit\n{task.id}, produced by the {task.agent}." + (f"\nWork item:\n{json.dumps(task.meta['item'], indent=1)}\nIts files are in the workspace; read them." if task.kind == "implement" else ""),
             f"# What that step was given\n{json.dumps(upstream, indent=1)}",
+            eng.changes(task),
             f"# Output under audit\n{json.dumps(task.result, indent=1)}",
             "# Rules to judge\n" + "\n".join(f"- {r.id}: {r.text}" for r in rules),
             "Submit exactly one verdict per rule. For a failed rule, `evidence` quotes the defect and `fix` says what to change.",
         ]
+        if part
     )
     ids = [r.id for r in rules]
     schema = obj(verdicts=arr(obj(rule={"type": "string", "enum": ids}, passed={"type": "boolean"}, evidence=TEXT, fix={"type": "string"}), 1))

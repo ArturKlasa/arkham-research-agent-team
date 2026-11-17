@@ -2,7 +2,8 @@
 
 A hook is a function that receives every event (or only the types it names).
 Raising Block from a `pre_tool` or `task_start` hook vetoes that action: a
-vetoed tool call is returned to the agent as an error, a vetoed task fails.
+vetoed tool call is returned to the agent as an error, a vetoed task fails
+(raise Halt instead to pause the run and leave the task runnable).
 """
 
 from harness.events import Block

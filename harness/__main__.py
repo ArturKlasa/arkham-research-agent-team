@@ -54,7 +54,7 @@ def main() -> None:
     args = parser.parse_args()
 
     chosen = {k: v for k, v in vars(args).items() if v is not None and k in ("provider", "model", "base_url", "sandbox", "sources")}
-    orchestrator = Orchestrator(Config(**chosen), args.session)
+    orchestrator = Orchestrator(Config.load(**chosen), args.session)
     if args.hooks:
         load_hooks(args.hooks, orchestrator.engine.bus)
 

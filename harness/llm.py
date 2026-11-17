@@ -84,8 +84,9 @@ class AnthropicLLM:
 
     def __init__(self, cfg):
         import anthropic  # imported lazily so the other providers need no dependency
+        import httpx2  # the SDK's HTTP library: a connection lost mid-stream surfaces as its error, not the SDK's
 
-        self.sdk = anthropic
+        self.sdk, self.dropped = anthropic, httpx2.TransportError
         self.client = anthropic.Anthropic(max_retries=0)  # the harness owns retries, see chat()
         self.model, self.effort = cfg.model or "claude-opus-5-5", cfg.effort
 
@@ -110,7 +111,7 @@ class AnthropicLLM:
                     if event.type == "text" and on_text:
                         on_text(event.text)
                 msg = stream.get_final_message()
-        except (sdk.RateLimitError, sdk.APIConnectionError) as exc:
+        except (sdk.RateLimitError, sdk.APIConnectionError, self.dropped) as exc:
             raise TransientError(f"{type(exc).__name__}: {exc}") from exc
         except sdk.APIStatusError as exc:
             # A status below 400 means the error arrived inside an already-open stream (typically "overloaded").
@@ -118,6 +119,8 @@ class AnthropicLLM:
             raise kind(f"{type(exc).__name__} ({exc.status_code}): {exc.message}") from exc
         except ValueError as exc:  # the SDK could not parse a streamed tool input at all: re-issue the turn
             raise TransientError(f"malformed tool input in stream: {exc}") from exc
+        if msg.stop_reason is None:  # the connection closed cleanly before message_stop: text or tool input may be cut
+            raise TransientError("the stream ended before the reply was complete")
 
         return Reply(
             text="".join(b.text for b in msg.content if b.type == "text"),
@@ -173,11 +176,12 @@ class OpenAICompatLLM:
         headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {self.key}"} if self.key else {})}
         request = urllib.request.Request(self.url, json.dumps(body).encode(), headers)
 
-        reply, calls = Reply(), {}  # calls: stream index -> partially assembled tool call
+        reply, calls, complete = Reply(), {}, False  # calls: stream index -> partially assembled tool call
         try:
             with urllib.request.urlopen(request, timeout=600) as response:
                 for raw in response:  # server-sent events, one "data: {json}" line per chunk
                     line = raw.decode("utf-8").strip()
+                    complete = complete or line.endswith("[DONE]")
                     if not line.startswith("data:") or line.endswith("[DONE]"):
                         continue
                     chunk = json.loads(line[5:])
@@ -195,6 +199,7 @@ class OpenAICompatLLM:
                             call["id"] = part.get("id") or call["id"]
                             call["name"] = fn.get("name") or call["name"]
                             call["args"] += fn.get("arguments") or ""
+                        complete = complete or bool(choice.get("finish_reason"))
                         if choice.get("finish_reason") == "length":
                             reply.stop = "max_tokens"
         except urllib.error.HTTPError as exc:  # must precede URLError, its base class
@@ -202,6 +207,8 @@ class OpenAICompatLLM:
             raise (TransientError if exc.code in (408, 409, 429) or exc.code >= 500 else FatalError)(detail) from exc
         except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
             raise TransientError(f"{type(exc).__name__}: {exc}") from exc
+        if not complete:  # closed without a finish reason or [DONE]: text or tool arguments may be cut
+            raise TransientError("the stream ended before the reply was complete")
 
         for call in calls.values():
             try:

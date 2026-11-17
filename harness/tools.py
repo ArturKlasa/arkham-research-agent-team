@@ -10,6 +10,7 @@ Three trust boundaries live here:
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import html
 import ipaddress
@@ -27,6 +28,8 @@ from pathlib import Path
 from .agent import Tool, clip
 
 SKIP = {"__pycache__", ".git"}
+PAGE = 16_000  # characters of a file returned per read; below the agent loop's limit, so a page is never cut again
+NAT64 = ipaddress.ip_network("64:ff9b::/96")  # IPv6 addresses that wrap an IPv4 one
 
 
 class Workspace:
@@ -77,7 +80,14 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None)
     def read_file(a):
         target = ws.resolve(a["path"])
         consulted.append(ws.name(target))
-        return clip(target.read_text(errors="replace"), 40_000)
+        # A line longer than a page (minified JSON) is cut into page-sized pieces, so every file can be read to its end.
+        lines = [line[i : i + PAGE] for line in target.read_text(errors="replace").splitlines(keepends=True) for i in range(0, len(line), PAGE)]
+        first = max(a.get("offset", 1), 1) - 1
+        size, last = 0, first
+        while last < len(lines) and (last == first or size + len(lines[last]) <= PAGE):  # at least one line, then up to a page
+            size, last = size + len(lines[last]), last + 1
+        more = f"\n… [lines {first + 1}-{last} of {len(lines)}; call again with offset={last + 1} for the rest]" if last < len(lines) else ""
+        return "".join(lines[first:last]) + more or "(empty)"
 
     def search_files(a):
         pattern, hits = re.compile(a["pattern"]), []
@@ -97,8 +107,13 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None)
         return f"wrote {ws.name(target)} ({len(a['content'])} characters)"
 
     def run_command(a):
+        # The sandbox mounts the whole workspace writable, so the write_file ownership rule is enforced here too:
+        # whatever a command changes outside the engineer's own files is put back.
+        before = _snapshot(ws.root, writable) if writable is not None else None
         code, output = run_sandboxed(cfg, ws.root, a["command"])
-        return f"exit code {code}\n{output}"
+        undone = _restore(ws.root, writable, before) if before is not None else []
+        note = f"\nnote: files a command creates or changes outside your work item do not persist; undone: {', '.join(undone[:20])}" if undone else ""
+        return f"exit code {code}\n{output}{note}"
 
     def web_search(a):
         results = search_web(a["query"])  # results are leads, not sources: a page counts once it is fetched
@@ -112,7 +127,7 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None)
     path = {"type": "string", "description": "Relative path. Reference files, if any, are under sources/."}
     tools = [
         Tool("list_files", "List files under a directory of the workspace (default: everything).", _obj(path=path, _optional=["path"]), list_files),
-        Tool("read_file", "Read a text file from the workspace or sources/.", _obj(path=path), read_file),
+        Tool("read_file", "Read a text file from the workspace or sources/. A long file comes in pages; pass `offset` to continue.", _obj(path=path, offset={"type": "integer", "description": "First line to return (default 1)."}, _optional=["offset"]), read_file),
         Tool("search_files", "Search files with a regular expression. Returns matching lines.", _obj(pattern={"type": "string"}, path=path, _optional=["path"]), search_files),
         Tool("write_file", "Create or overwrite a file in the workspace with the complete content.", _obj(path=path, content={"type": "string"}), write_file),
         Tool("run_command", "Run a shell command in the workspace inside an offline sandbox (Python standard library only). Returns the exit code and output.", _obj(command={"type": "string"}), run_command),
@@ -124,6 +139,34 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None)
 
 def _obj(_optional=(), **properties) -> dict:
     return {"type": "object", "properties": properties, "required": [k for k in properties if k not in _optional]}
+
+
+def _snapshot(root: Path, own: set) -> dict:
+    """Content of every file outside `own`, by workspace path. A symlink is recorded as its target, never followed."""
+    # held in memory per command, contents only (not modes): fine for generated projects; an overlay mount scales further
+    found = {}
+    for folder, _, names in os.walk(root):
+        for name in names:
+            path = Path(folder, name)
+            rel = str(path.relative_to(root))
+            if rel not in own and (path.is_symlink() or path.is_file()):
+                found[rel] = os.readlink(path) if path.is_symlink() else path.read_bytes()
+    return found
+
+
+def _restore(root: Path, own: set, before: dict) -> list[str]:
+    """Put back every file outside `own` that differs from the snapshot. Returns their names."""
+    after = _snapshot(root, own)
+    changed = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
+    for name in reversed(changed):  # children first, in case a directory took a file's place
+        path = root / name
+        with contextlib.suppress(FileNotFoundError, NotADirectoryError):
+            shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+    for name in changed:
+        if name in before:
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes(before[name]) if isinstance(before[name], bytes) else os.symlink(before[name], root / name)
+    return changed
 
 
 # --- sandbox -----------------------------------------------------------------------------------
@@ -189,7 +232,10 @@ def check_public(url: str) -> None:
         raise PermissionError(f"{url}: only http(s) URLs are allowed")
     # checks at resolve time only; pin the resolved IP for the request if DNS rebinding is in the threat model
     for info in socket.getaddrinfo(parts.hostname, None):
-        if not ipaddress.ip_address(info[4][0].split("%")[0]).is_global:
+        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        if address in NAT64:  # judge the IPv4 address inside, or 64:ff9b::7f00:1 reaches 127.0.0.1 through a gateway
+            address = ipaddress.ip_address(int(address) & 0xFFFFFFFF)
+        if not address.is_global:
             raise PermissionError(f"{url}: resolves to a non-public address")
 
 

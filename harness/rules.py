@@ -14,8 +14,10 @@ A check receives (result, task, engine) and returns a list of problems.
 from __future__ import annotations
 
 import ast
+import io
 import posixpath
 import re
+import tokenize
 from dataclasses import dataclass
 from typing import Callable
 
@@ -53,7 +55,8 @@ def _traceable(result, task, eng):
 
 def _buildable(result, task, eng):
     ids = [item["id"] for item in result["work_items"]]
-    problems = [f"work item id {i!r} is used more than once" for i in sorted({i for i in ids if ids.count(i) > 1})]
+    problems = [f"work item id {i!r} must look like W1, W2, ..." for i in ids if not re.fullmatch(r"W\d+", i)]  # ids become task ids and file names
+    problems += [f"work item id {i!r} is used more than once" for i in sorted({i for i in ids if ids.count(i) > 1})]
     waiting = {item["id"]: set(item["depends_on"]) for item in result["work_items"]}
     problems += [f"{i} depends on unknown work item {d!r}" for i, deps in waiting.items() for d in sorted(deps - set(ids))]
     while waiting and not problems:  # peel off items whose dependencies are all built; a remainder is a cycle
@@ -80,17 +83,34 @@ def _files_written(result, task, eng):
     problems = []
     for name in task.meta["item"]["files"]:
         path = eng.ws.root / name
-        if not path.is_file() or not path.read_text(errors="replace").strip():
+        source = path.read_text(errors="replace") if path.is_file() else ""
+        if not source.strip() and not (path.is_file() and path.name == "__init__.py"):  # a package marker may be empty
             problems.append(f"{name} is listed in the work item but is missing or empty")
         elif name.endswith(".py"):
-            source = path.read_text(errors="replace")
             try:
-                ast.parse(source)  # parses without executing anything
+                problems += [f"{name} {found}" for found in _placeholders(source)]  # parses without executing anything
             except SyntaxError as exc:
                 problems.append(f"{name} has a syntax error on line {exc.lineno}: {exc.msg}")
-            if re.search(r"raise NotImplementedError|\bTODO\b|\bFIXME\b", source):
-                problems.append(f"{name} still contains placeholder code (TODO / NotImplementedError)")
+            except (ValueError, tokenize.TokenError) as exc:  # e.g. a NUL byte: a problem to report, not a crash
+                problems.append(f"{name} cannot be parsed as Python: {exc}")
     return problems
+
+
+def _placeholders(source: str) -> list[str]:
+    """Unfinished code: a TODO/FIXME comment, or a function that only raises NotImplementedError.
+
+    Looks at comments and function bodies, not raw text, so a to-do app or an abstract method is not flagged.
+    """
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not any("abstractmethod" in ast.unparse(d) for d in node.decorator_list):
+            body = node.body[1:] if ast.get_docstring(node) is not None else node.body
+            if len(body) == 1 and isinstance(body[0], ast.Raise) and "NotImplementedError" in ast.unparse(body[0]):
+                found.append(f"line {node.lineno}: {node.name}() only raises NotImplementedError; implement it, or mark it @abstractmethod if it is an interface")
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT and re.search(r"\b(TODO|FIXME)\b", token.string):
+            found.append(f"line {token.start[0]}: placeholder comment {token.string[:60]!r}; finish the code and remove it")
+    return found
 
 
 RULES = [
@@ -101,7 +121,7 @@ RULES = [
     Rule("PRD-COVERAGE", "prd", "The requirements cover everything the plan puts in scope for the user's task, and add nothing the plan leaves out."),
     Rule("PRD-TESTABLE", "prd", "Every acceptance criterion can be verified objectively by a test."),
     Rule("SPEC-TRACE", "spec", "Every PRD requirement is covered by a work item, and work items cover only PRD requirements.", _traceable),
-    Rule("SPEC-DAG", "spec", "Work item ids are unique and their dependencies exist and form no cycle.", _buildable),
+    Rule("SPEC-DAG", "spec", "Work item ids are unique and of the form W<number>, and their dependencies exist and form no cycle.", _buildable),
     Rule("SPEC-FILES", "spec", "File paths are relative, each file is owned by exactly one work item, and the spec includes tests.", _file_ownership),
     Rule("SPEC-DESIGN", "spec", "The design is sufficient to meet every requirement's acceptance criterion, and interfaces between work items are precise enough to build them separately."),
     Rule("IMPL-FILES", "implement", "Every file of the work item exists, parses, and contains no placeholder code.", _files_written),
@@ -110,7 +130,7 @@ RULES = [
 ]
 
 # Checked once per sweep over the whole workspace rather than per task; see auditor.run_suite.
-SUITE = Rule("IMPL-TESTS", "implement", "The spec's test command passes in the sandbox.")
+SUITE = Rule("IMPL-TESTS", "implement", "The spec's test command passes in the sandbox and runs at least one test.")
 
 
 def violations(result: dict, task, eng) -> list[tuple[Rule, str]]:

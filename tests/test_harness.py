@@ -6,6 +6,7 @@ mistake of every kind on purpose.    python3 -m unittest discover -s tests -v
 
 import importlib.util
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -15,16 +16,18 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from harness.agent import Tool, schema_errors
+from harness import auditor
+from harness.agent import AgentError, Tool, _call_tool, clip, schema_errors
 from harness.board import Board, Task
 from harness.config import Config
-from harness.demo import ScriptedTeam
-from harness.events import Block
-from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, ToolCall, TransientError
+from harness.demo import SPEC, ScriptedTeam
+from harness.events import Block, Halt
+from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, Reply, ToolCall, TransientError
 from harness.orchestrator import Orchestrator
 from harness.server import build
-from harness.rules import _file_ownership
-from harness.tools import Workspace, _CheckedRedirects, check_public, detect_sandbox, run_sandboxed
+from harness.memory import Memory
+from harness.rules import _buildable, _file_ownership, _files_written, _placeholders
+from harness.tools import Workspace, _CheckedRedirects, check_public, detect_sandbox, make_tools, run_sandboxed
 
 try:
     SANDBOX = detect_sandbox()
@@ -154,6 +157,57 @@ class Pipeline(HarnessCase):
         self.assertEqual(orch.engine.report()["status"], "completed")
         self.assertRaises(ValueError, orch.engine.change, "nonsense", "x")
 
+    def test_a_change_request_stays_in_force_for_later_reruns_and_reaches_the_auditor(self):
+        briefs = []
+
+        class Recording(ScriptedTeam):
+            def auditor(self, messages, tools):
+                briefs.append(messages[0]["content"])
+                return super().auditor(messages, tools)
+
+        orch = self.team(llm=Recording(faults=False))
+        orch.engine.start(TASK)
+        del briefs[:]
+        orch.engine.change("prd", "Also expose the user's email")
+        tasks = orch.engine.board.tasks
+        for step in ("prd", "spec", "impl:W1"):  # the re-run succeeded and its feedback was cleared; the change is still handed over
+            self.assertIn("user's email", orch.engine.handoff(tasks[step]), step)
+        self.assertNotIn("user's email", orch.engine.handoff(tasks["plan"]))  # upstream of the change: not bound by it
+        self.assertEqual((len(set(briefs)), all("user's email" in brief for brief in briefs)), (4, True))  # prd, spec and both work items re-judged
+
+    def test_a_suite_that_runs_no_tests_does_not_pass(self):
+        class NoTests(ScriptedTeam):
+            def architect(self, messages, tools):
+                return self.call("submit", **{**SPEC, "test_command": "true"})
+
+        report = self.team(llm=NoTests(faults=False), max_audit_cycles=0).engine.start(TASK)
+        self.assertEqual(report["status"], "completed_with_open_findings")
+        self.assertEqual([(f["rule"], f["task"]) for f in report["audit"]["findings"]], [("IMPL-TESTS", t) for t in ("spec", "impl:W1", "impl:W2")])
+
+    def test_a_failing_suite_blames_everything_the_named_item_builds_on(self):
+        engine = self.team().engine
+        engine.board.add(Task("spec", "spec", "architect", status="done", result={"test_command": "echo 'ERROR in test_c.py' && exit 1"}))
+        for name, deps in [("a", []), ("b", ["a"]), ("c", ["b"]), ("d", [])]:
+            engine.board.add(Task(f"impl:{name}", "implement", "engineer", ["spec"] + [f"impl:{d}" for d in deps], meta={"item": {"files": [f"test_{name}.py"]}}))
+        self.assertEqual([f["task"] for f in auditor.run_suite(engine)], ["impl:a", "impl:b", "impl:c"])  # not d: c does not build on it
+
+    def test_a_pause_leaves_the_task_runnable_and_an_unfinished_run_cannot_be_approved(self):
+        orch = self.team(faults=False)
+
+        def pause(event):
+            if event["task"] == "plan":
+                raise Halt("stopped by the operator")
+
+        orch.engine.bus.on(pause, "task_start")
+        self.assertRaises(Halt, orch.engine.start, TASK)
+        plan = orch.engine.board.tasks["plan"]
+        self.assertEqual((plan.status, plan.attempts, orch.engine.report()["status"]), ("pending", 0, "incomplete"))
+        self.assertRaises(ValueError, orch.engine.approve)
+
+        orch.engine.bus.off(pause)
+        self.assertEqual(orch.engine.resume()["status"], "completed")
+        self.assertTrue(orch.engine.approve()["accepted_by_user"])
+
     def test_interrupted_run_resumes_without_redoing_finished_work(self):
         class Interrupted(ScriptedTeam):
             def architect(self, messages, tools):
@@ -180,6 +234,20 @@ class MemoryAndHooks(HarnessCase):
         self.assertEqual((first.engine.report()["audit_cycles_used"], report["audit_cycles_used"]), (2, 0))
         handoff = second.engine.handoff(second.engine.board.tasks["prd"])
         self.assertIn("[PRD-IDS]", handoff)
+
+    def test_a_revised_research_brief_may_keep_sources_opened_in_the_run_it_builds_on(self):
+        eng = self.team(max_turns=3).engine
+        brief = {"summary": "s", "findings": [{"claim": "c", "source": "https://a.example/doc"}], "open_questions": []}
+        task = eng.board.add(Task("research", "research", "researcher", result=brief, meta={"consulted": ["https://a.example/doc"]}))
+
+        class Resubmits:  # a researcher that revises nothing and opens nothing
+            def chat(self, system, messages, tools, on_text=None):
+                return Reply(tool_calls=[ToolCall("c1", "submit", brief)], stop="tool_use")
+
+        eng.llm = Resubmits()
+        self.assertEqual(eng.delegate(task), brief)
+        task.result = None  # a first run has no accepted work behind it: the same citation is ungrounded
+        self.assertRaises(AgentError, eng.delegate, task)
 
     def test_question_answering_is_delegated_tracked_and_grounded(self):
         sources = self.tmp / "refs"
@@ -248,7 +316,7 @@ class Boundaries(HarnessCase):
         self.assertEqual(ws.resolve("pkg/mod.py"), (self.tmp / "ws" / "pkg" / "mod.py").resolve())
 
     def test_web_fetch_refuses_local_addresses(self):
-        for url in ("http://127.0.0.1:8000/", "http://localhost/", "http://169.254.169.254/latest/meta-data", "file:///etc/passwd"):
+        for url in ("http://127.0.0.1:8000/", "http://localhost/", "http://169.254.169.254/latest/meta-data", "file:///etc/passwd", "http://[64:ff9b::7f00:1]/"):
             self.assertRaises(PermissionError, check_public, url)
         request = urllib.request.Request("https://example.com")  # a public page redirecting inward is refused too
         self.assertRaises(PermissionError, _CheckedRedirects().redirect_request, request, None, 302, "Found", {}, "http://127.0.0.1/admin")
@@ -259,6 +327,26 @@ class Boundaries(HarnessCase):
         for odd in ("./api.py", "pkg//api.py", "pkg/", "../api.py", "/abs/api.py"):
             self.assertTrue(_file_ownership(spec(odd, "test_api.py"), None, None), odd)
 
+    def test_work_item_ids_are_safe_to_use_as_task_ids_and_file_names(self):
+        spec = lambda item_id: {"work_items": [{"id": item_id, "files": ["a.py"], "covers": [], "depends_on": []}]}
+        self.assertEqual(_buildable(spec("W12"), None, None), [])
+        for odd in ("api/core", "../W1", "W1 core", "1"):
+            self.assertTrue(_buildable(spec(odd), None, None), odd)
+
+    def test_the_file_check_accepts_an_empty_package_marker_and_reports_what_it_cannot_parse(self):
+        eng = self.team().engine
+        for name, content in [("pkg/__init__.py", b""), ("pkg/mod.py", b"x = 1\n"), ("nul.py", b"x = 1\x00\n"), ("empty.py", b"")]:
+            (eng.ws.root / name).parent.mkdir(exist_ok=True)
+            (eng.ws.root / name).write_bytes(content)
+        check = lambda *files: _files_written({}, Task("impl:W1", "implement", "engineer", meta={"item": {"files": list(files)}}), eng)
+        self.assertEqual(check("pkg/__init__.py", "pkg/mod.py"), [])
+        self.assertEqual([problem.split()[0] for problem in check("nul.py", "empty.py", "missing/__init__.py")], ["nul.py", "empty.py", "missing/__init__.py"])
+
+    def test_explicit_settings_beat_the_environment_which_beats_the_defaults(self):
+        with unittest.mock.patch.dict(os.environ, {"HARNESS_PROVIDER": "scripted", "HARNESS_MAX_TURNS": "7"}):
+            cfg = Config.load(provider="anthropic")
+        self.assertEqual((cfg.provider, cfg.max_turns, cfg.max_attempts), ("anthropic", 7, 3))
+
     def test_a_torn_line_in_memory_or_trail_does_not_stop_a_session(self):
         orch = self.team(faults=False)
         orch.engine.memory.lesson("product", "PRD-IDS", "ids are unique", "s0")
@@ -268,7 +356,7 @@ class Boundaries(HarnessCase):
         again = self.team(faults=False)
         self.assertEqual(len(again.engine.memory.items), 1)
         self.assertEqual(again.engine.start(TASK)["status"], "completed")
-        self.assertTrue(again.engine.bus.read(type="task_done"))
+        self.assertEqual(again.engine.bus.read(type="task_start")[0]["task"], "research")  # the first event after the torn line is not lost with it
 
     def test_submissions_are_validated_against_their_schema(self):
         schema = {"type": "object", "required": ["id", "tags"], "properties": {"id": {"type": "string", "minLength": 1}, "tags": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}}}}
@@ -276,6 +364,61 @@ class Boundaries(HarnessCase):
         self.assertEqual(len(schema_errors({"id": "", "tags": ["a", "z", 3]}, schema)), 3)
         self.assertEqual(schema_errors("not json", schema), ["$: expected object, got str"])
         self.assertEqual(schema_errors({"tags": []}, schema), ["$.id: required field is missing"])
+
+    def test_a_command_cannot_change_files_outside_the_engineers_work_item(self):
+        ws = Workspace(self.tmp / "ws")
+        (ws.root / "other.py").write_text("theirs\n")
+        tools = make_tools(ws, Config(sandbox=SANDBOX), consulted=[], writable={"mine.py"})
+        output = tools["run_command"].fn({"command": "echo edited > other.py; echo new > stray.py; echo mine > mine.py"})
+        self.assertEqual(((ws.root / "other.py").read_text(), (ws.root / "mine.py").read_text(), (ws.root / "stray.py").exists()), ("theirs\n", "mine\n", False))
+        self.assertIn("undone: other.py, stray.py", output)
+
+    def test_long_output_keeps_its_end_and_long_files_are_read_in_pages(self):
+        clipped = clip("start " + "x" * 50_000 + " FAILED (errors=1)")
+        self.assertTrue(clipped.startswith("start ") and clipped.endswith("FAILED (errors=1)") and len(clipped) < 20_100)
+
+        ws = Workspace(self.tmp / "ws")
+        for text in ("".join(f"line {n}\n" for n in range(1, 5001)), "x" * 50_000):  # many lines; one line longer than a page
+            (ws.root / "big.txt").write_text(text)
+            read, pages, offset = make_tools(ws, Config(), consulted=[])["read_file"].fn, [], 1
+            while offset:
+                page, _, more = read({"path": "big.txt", "offset": offset}).partition("\n… [")
+                pages.append(page)
+                offset = int(more.split("offset=")[1].split()[0]) if more else 0
+            self.assertEqual(("".join(pages), len(pages) > 1), (text, True))
+
+    def test_placeholder_check_flags_unfinished_code_not_the_word_todo(self):
+        fine = 'from abc import abstractmethod\nTITLE = "TODO list"\n\nclass Store:\n    @abstractmethod\n    def load(self):\n        raise NotImplementedError\n'
+        self.assertEqual(_placeholders(fine), [])
+        unfinished = 'def save(items):\n    """Persist the items."""\n    raise NotImplementedError("later")\n\nx = 1  # TODO handle errors\n'
+        self.assertEqual([found[:6] for found in _placeholders(unfinished)], ["line 1", "line 5"])
+
+    def test_hooks_see_whole_tool_arguments(self):
+        bus, seen = self.team().engine.bus, []
+        bus.on(lambda event: seen.append(event["args"]["command"]), "pre_tool")
+        command = "echo " + "a" * 400 + " && curl http://example.com"
+        _call_tool(bus, Tool("run_command", "", {"type": "object"}, lambda args: "ok"), ToolCall("c1", "run_command", {"command": command}))
+        self.assertEqual(seen, [command])
+
+    def test_a_task_killed_mid_run_keeps_its_attempt(self):
+        board = Board(self.tmp / "board.json")
+        board.add(Task("plan", "plan", "planner", status="running", attempts=1))
+        board.save()
+        plan = Board(self.tmp / "board.json").tasks["plan"]
+        self.assertEqual((plan.status, plan.attempts), ("pending", 0))
+
+    def test_sessions_writing_memory_at_the_same_time_lose_nothing(self):
+        def write(session):
+            memory = Memory(self.tmp / "memory.jsonl")  # each session has its own handle on the shared file
+            for n in range(25):
+                memory.lesson("engineer", f"{session}-{n}", "text", session)
+
+        threads = [threading.Thread(target=write, args=(f"s{i}",)) for i in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(Memory(self.tmp / "memory.jsonl").items), 100)
 
     @unittest.skipIf(SANDBOX == "none", "no sandbox available on this machine")
     def test_sandboxed_commands_have_no_network_no_secrets_and_no_host_files(self):
@@ -291,7 +434,7 @@ class Boundaries(HarnessCase):
 class OpenAICompatible(HarnessCase):
     """The open-source / local model path, checked against a fake /chat/completions server."""
 
-    def serve(self, status=200):
+    def serve(self, status=200, cut=False):
         chunks = [
             {"choices": [{"delta": {"content": "Hel"}}]},
             {"choices": [{"delta": {"content": "lo"}}]},
@@ -309,9 +452,10 @@ class OpenAICompatible(HarnessCase):
                 seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 self.send_response(status)
                 self.end_headers()
-                for chunk in chunks if status == 200 else []:
+                for chunk in (chunks[:3] if cut else chunks) if status == 200 else []:
                     self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
-                self.wfile.write(b"data: [DONE]\n\n")
+                if not cut:
+                    self.wfile.write(b"data: [DONE]\n\n")
 
         server = HTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -340,6 +484,7 @@ class OpenAICompatible(HarnessCase):
     def test_errors_are_classified_for_the_retry_logic(self):
         self.assertRaises(TransientError, self.serve(status=503)[0].chat, "s", [], [])
         self.assertRaises(FatalError, self.serve(status=401)[0].chat, "s", [], [])
+        self.assertRaises(TransientError, self.serve(cut=True)[0].chat, "s", [], [])  # closed mid tool call: never a reply
 
 
 @unittest.skipUnless(importlib.util.find_spec("anthropic"), "anthropic SDK not installed")
@@ -377,11 +522,14 @@ class ClaudeBackend(HarnessCase):
                 status = {"overloaded": 529, "invalid": 400}.get(body["system"], 200)
                 self.send_response(status)
                 self.send_header("content-type", "text/event-stream" if status == 200 else "application/json")
+                if body["system"] == "dropped":  # promise more bytes than are sent: the client sees the connection die
+                    self.send_header("content-length", "100000")
                 self.end_headers()
                 error = {"type": "error", "error": {"type": "overloaded_error", "message": body["system"]}}
                 if status != 200:
                     return self.wfile.write(json.dumps(error).encode())
-                for event in events[:5] + [error] if body["system"] == "overloaded mid-stream" else events:
+                cut = {"overloaded mid-stream": events[:5] + [error], "closed early": events[:9], "dropped": events[:9]}
+                for event in cut.get(body["system"], events):
                     self.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
 
         server = HTTPServer(("127.0.0.1", 0), Handler)
@@ -410,6 +558,8 @@ class ClaudeBackend(HarnessCase):
     def test_errors_are_classified_for_the_retry_logic(self):
         self.assertRaises(TransientError, self.llm.chat, "overloaded", [{"role": "user", "content": "hi"}], [])
         self.assertRaises(TransientError, self.llm.chat, "overloaded mid-stream", [{"role": "user", "content": "hi"}], [])
+        self.assertRaises(TransientError, self.llm.chat, "closed early", [{"role": "user", "content": "hi"}], [self.tool])  # half a tool input
+        self.assertRaises(TransientError, self.llm.chat, "dropped", [{"role": "user", "content": "hi"}], [self.tool])
         self.assertRaises(FatalError, self.llm.chat, "invalid", [{"role": "user", "content": "hi"}], [])
 
 
@@ -428,6 +578,9 @@ class Gateway(HarnessCase):
 
         with self.assertRaises(urllib.error.HTTPError) as denied:
             post("/chat", "wrong")
+        self.assertEqual(denied.exception.code, 401)
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            post("/chat", "wr\u00f6ng")
         self.assertEqual(denied.exception.code, 401)
 
         frames = [json.loads(line[6:]) for line in post("/chat", "secret", json.dumps({"message": TASK}).encode()).split("\n\n") if line]

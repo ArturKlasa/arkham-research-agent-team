@@ -59,8 +59,10 @@ def schema_errors(value, schema: dict, path: str = "$") -> list[str]:
 
 
 def clip(text: str, limit: int = 20_000) -> str:
-    """Bound a tool result, telling the model when something was cut."""
-    return text if len(text) <= limit else text[:limit] + f"\n… [truncated, {len(text) - limit} more characters]"
+    """Bound a tool result, telling the model what was cut. Both ends are kept: failures and summaries come last."""
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit // 2]}\n… [{len(text) - limit} characters cut from the middle]\n{text[-limit // 2 :]}"
 
 
 def run_agent(llm, bus, cfg, system, messages, tools, submit_schema=None, check=None, on_text=None):
@@ -119,7 +121,7 @@ def _call_tool(bus, tool: Tool | None, call) -> tuple[str, bool]:
     if problems:
         return "Invalid arguments:\n- " + "\n- ".join(problems), True
     try:
-        bus.emit("pre_tool", tool=tool.name, args={k: v[:300] if isinstance(v, str) else v for k, v in call.args.items()})
+        bus.emit("pre_tool", tool=tool.name, args=call.args)  # whole arguments: a policy hook must see all of a command
         output = tool.fn(call.args)
         bus.emit("post_tool", tool=tool.name, ok=True, output=output[:500])
         return output, False

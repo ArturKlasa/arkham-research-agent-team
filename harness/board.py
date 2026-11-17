@@ -45,8 +45,8 @@ class Board:
             self.meta = saved["meta"]
             self.tasks = {t["id"]: Task(**t) for t in saved["tasks"]}
             for task in self.tasks.values():  # a task still `running` means the process died mid-task
-                if task.status == "running":
-                    task.status = "failed" if task.kind == "adhoc" else "pending"
+                if task.status == "running":  # the attempt never finished, so it does not count against the budget
+                    task.status, task.attempts = ("failed" if task.kind == "adhoc" else "pending"), max(task.attempts - 1, 0)
 
     def save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
