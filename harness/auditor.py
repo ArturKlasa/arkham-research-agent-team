@@ -54,10 +54,19 @@ def run_suite(eng) -> list[dict]:
     command = eng.board.tasks["spec"].result["test_command"]
     code, output = run_sandboxed(eng.cfg, eng.ws.root, command)
     eng.bus.emit("suite", command=command, exit_code=code, output=output[-3000:])
-    tested = re.search(r"\bRan [1-9]\d* tests?\b|\b[1-9]\d* passed\b", output)  # unittest's summary line, or pytest's
-    if code == 0 and tested:
-        return []
+    ran, skipped = re.search(r"\bRan (\d+) tests?\b", output), re.search(r"\bskipped=(\d+)", output)
+    tested = (ran and int(ran[1]) > int(skipped[1] if skipped else 0)) or re.search(r"\b[1-9]\d* passed\b", output)  # unittest, or pytest; all skipped proves nothing
     builders = [t for t in eng.board.pipeline() if t.kind == "implement"]
+    if code == 0 and tested:
+        # The architect wrote the command, so it may run only part of the suite. unittest -v names each test's module;
+        # ponytail: without -v (or with pytest) there is nothing to compare, and the check is skipped.
+        modules = {part for found in re.findall(r"\(([\w.]+)\) \.\.\. ", output) for part in found.split(".")}
+        test_files = [f for t in builders for f in t.meta["item"]["files"] if f.rsplit("/", 1)[-1].startswith("test") and f.endswith(".py")]
+        unrun = [f for f in test_files if modules and f.rsplit("/", 1)[-1][:-3] not in modules]
+        if not unrun:
+            return []
+        fix = "Make test_command run every test file of the work items, e.g. `python3 -m unittest discover -v` from the workspace root."
+        return [_finding(SUITE.id, "spec", f"`{command}` passed but never ran {', '.join(unrun)}:\n{output[-3000:]}", fix)]
     if code in (126, 127):  # the shell could not run the command at all: the spec chose it, the code is not at fault
         fix = "Make test_command a command that exists in the sandbox (Python standard library only), run from the workspace root."
         return [_finding(SUITE.id, "spec", f"`{command}` could not be run (exit code {code}):\n{output[-3000:]}", fix)]

@@ -227,6 +227,18 @@ class Pipeline(HarnessCase):
             engine.board.add(Task(f"impl:{name}", "implement", "engineer", ["spec"] + [f"impl:{d}" for d in deps], meta={"item": {"files": [f"test_{name}.py"]}}))
         self.assertEqual([f["task"] for f in auditor.run_suite(engine)], ["impl:a", "impl:b", "impl:c"])  # not d: c does not build on it
 
+    def test_a_suite_that_skips_every_test_or_leaves_a_test_file_out_does_not_pass(self):
+        engine = self.team().engine
+        for name in "ab":
+            engine.board.add(Task(f"impl:{name}", "implement", "engineer", ["spec"], meta={"item": {"files": [f"{name}.py", f"test_{name}.py"]}}))
+        for command, blamed in [
+            ("printf 'Ran 2 tests\\n\\nOK (skipped=2)\\n'", ["spec", "impl:a", "impl:b"]),  # nothing was actually tested
+            ("printf 'test_x (test_a.T) ... ok\\nRan 1 test\\nOK\\n'", ["spec"]),  # test_b.py never ran: the command is at fault
+            ("printf 'test_x (test_a.T) ... ok\\ntest_y (test_b.T.test_y) ... ok\\nRan 2 tests\\nOK\\n'", []),
+        ]:
+            engine.board.add(Task("spec", "spec", "architect", status="done", result={"test_command": command}))
+            self.assertEqual([f["task"] for f in auditor.run_suite(engine)], blamed, command)
+
     def test_a_test_command_that_cannot_run_is_the_specs_fault(self):
         engine = self.team().engine
         engine.board.add(Task("impl:a", "implement", "engineer", ["spec"], meta={"item": {"files": ["test_a.py"]}}))
