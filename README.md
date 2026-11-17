@@ -230,7 +230,7 @@ runs/<session>/workspace/      the solution that was built
 | Item | Where | What it does |
 |---|---|---|
 | Auto-memory | `memory.py` | Written and recalled automatically. Past research briefs (only once the auditor has passed them) and user change requests (in the user's own words) are retrieved by relevance to the new task and added to the handoff. |
-| Self-improvement | `memory.py`, `engine.py` | Every rule an agent role violates becomes a standing lesson for that role, with a hit counter, shown to it in every later session. The tests show the mechanism with the scripted team, which is written to avoid a mistake once its lesson is in the handoff: a second session needs zero gate rejections and zero audit re-runs where the first needed two of each. The effect on a real model has not been measured. |
+| Self-improvement | `memory.py`, `engine.py` | Every rule an agent role violates becomes a standing lesson for that role, with a hit counter, shown to it in every later session. The tests show the mechanism with the scripted team, which is written to avoid a mistake once its lesson is in the handoff: a second session needs zero gate rejections and zero audit re-runs where the first needed two of each. One pair of runs against the real models is recorded, see below. |
 | Hooks | `events.py`, `examples/hooks.py` | Any function can subscribe to events. Raising `Block` from a `pre_tool` or `task_start` hook vetoes the action; hooks receive the whole tool arguments. The example enforces a token budget and a command deny-list. |
 | Gateway control, remote access | `server.py` | Token-protected HTTP API with server-sent events and a web UI: chat, a live task board (retries and audit re-opens show as they happen), and a stop button (itself a hook: it pauses the run before the next task, and `resume` continues it). |
 | Open-source and local models | `llm.py` | Any OpenAI-compatible endpoint, standard library only: Ollama, vLLM, LM Studio, OpenRouter. |
@@ -267,6 +267,19 @@ The test `test_a_poisoned_reference_file_cannot_make_an_obedient_agent_leak_a_se
 - The researcher tried a documentation URL it had made up, was refused by the fetch allow-list, searched for the page and then fetched it.
 - The first audit found that the plan had narrowed "search by author" to an author id. The run went back to the plan and redid everything after it. The second audit caught a README example that would not work as written, and only that work item was redone. The third audit passed.
 - The suite run by the harness passed: 705 s of task time, 76 model calls.
+
+### Self-improvement against the real models
+
+`examples/self-improvement/` is the same task run twice in a row: the first session starts with empty memory, the second with what the first left in `memory.jsonl`.
+
+| | 1: empty memory | 2: with session 1's lessons |
+|---|---|---|
+| researcher gate rejections | 1 (RES-GROUNDED: cited two pages it never opened) | 0 |
+| researcher model calls, tokens | 6, 24k | 4, 18k |
+| audit re-run cycles | 0 | 1 (SPEC-DESIGN: the spec's import list contradicted its own test) |
+| whole run | 391 s, 41 calls, suite passes | 612 s, 54 calls, suite passes |
+
+The lesson fixed the mistake it was recorded for: in session 2 the researcher cited only pages it had opened. It did not remove the cause: the researcher still guessed a documentation URL first, was refused, and searched. Session 2 cost more overall because the architect made a new mistake, which the audit caught and which became a lesson of its own. One pair of runs shows the mechanism working on a real model; whether sessions get cheaper on average needs repeated runs over several tasks.
 
 ## Known limits and next steps
 
