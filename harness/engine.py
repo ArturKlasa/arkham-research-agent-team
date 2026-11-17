@@ -50,6 +50,7 @@ class Engine:
         self.bus = Bus(self.dir / "trail.jsonl")
         self.board = Board(self.dir / "board.json")
         self.memory = Memory(cfg.memory)
+        self.said = ""  # the user's last message, in their own words (set by the orchestrator)
         self.bus.on(self._meter, "llm")
 
     # --- entry points ---------------------------------------------------------------------------
@@ -85,7 +86,9 @@ class Engine:
         self.board.meta.update(audit_cycles=0, accepted=False)
         self.board.meta.setdefault("changes", []).append({"task": task_id, "text": feedback})
         self.board.invalidate(task_id, [])
-        self._memory("note", "feedback", task.agent, f"A user asked for this change at the {task.kind} step: {feedback}", self.dir.name)
+        # Memory outlives the session, so it keeps the user's own words, not the orchestrator's rendering of them:
+        # that model reads untrusted text and could be talked into planting a "change" for every later run.
+        self._memory("note", "feedback", task.agent, f"A user asked for this change at the {task.kind} step: {self.said or feedback}", self.dir.name)
         return self.run()
 
     def changes(self, task: Task) -> str:
@@ -219,8 +222,6 @@ class Engine:
             self._expand(task.result)
         if task.kind == "audit":  # before the audit is saved as done, so findings are never left unacted on
             self._act_on_audit(task.result["findings"])
-        if task.kind == "research":
-            self._memory("note", "research", "researcher", f"For the task \"{self.board.meta['task'][:200]}\": {task.result['summary'][:1500]}", self.dir.name)
 
     def _expand(self, spec: dict) -> None:
         """Fan the spec out into one engineer task per work item, wired by the items' dependencies."""
@@ -244,6 +245,9 @@ class Engine:
 
     def _act_on_audit(self, findings: list[dict]) -> None:
         self.bus.emit("audit", findings=findings)
+        research = self.board.tasks["research"]
+        if research.meta.get("judged") == research.version:  # a brief read from the web enters memory only once the auditor passed it
+            self._memory("note", "research", "researcher", f"For the task \"{self.board.meta['task'][:200]}\": {research.result['summary'][:1500]}", self.dir.name)
         if not findings:
             return
         rules = {rule.id: rule for rule in RULES + [SUITE]}

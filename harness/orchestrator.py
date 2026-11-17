@@ -83,6 +83,7 @@ class Orchestrator:
             meta = self.engine.board.meta
             meta["user_urls"] = sorted(set(meta.get("user_urls", [])) | found)
             self.engine.board.save()
+        self.engine.said = text
         self.messages.append({"role": "user", "content": text})
         with self.engine.bus.scope(agent="orchestrator"):
             run_agent(for_role(self.llm, "orchestrator"), self.engine.bus, self.cfg, SYSTEM, self.messages, self.tools, on_text=on_text)
