@@ -24,7 +24,7 @@ from harness.config import Config
 from harness.demo import SPEC, ScriptedTeam
 from harness.events import Block, Halt, render
 from harness.experts import EXPERTS
-from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, Reply, Roster, ToolCall, TransientError, for_role, make_llm
+from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, Reply, Roster, ToolCall, TransientError, chat, for_role, make_llm
 from harness.orchestrator import Orchestrator
 from harness.server import build
 from harness.memory import Memory
@@ -442,6 +442,22 @@ class Boundaries(HarnessCase):
         for bad in ("archtect=m", "architect=", "architect"):
             self.assertRaises(ValueError, make_llm, Config(provider="openai", model="m", roles=bad))
 
+    def test_a_retried_call_waits_as_long_as_the_server_asks_and_marks_the_restarted_reply(self):
+        class Flaky:  # streams part of a reply, loses the connection, then answers in full
+            calls = 0
+
+            def chat(self, system, messages, tools, on_text):
+                self.calls += 1
+                on_text(f"try{self.calls}")
+                if self.calls == 1:
+                    raise TransientError("connection lost", retry_after=0.2)
+                return Reply(text="try2")
+
+        bus, shown = self.team().engine.bus, []
+        self.assertEqual(chat(Flaky(), bus, Config(retry_base=0.0), "s", [], [], shown.append).text, "try2")
+        self.assertEqual(shown, ["try1", "\n[connection lost; the reply starts again]\n", "try2"])
+        self.assertEqual([e["delay"] for e in bus.read(type="llm_retry")], [0.2])
+
     def test_a_torn_line_in_memory_or_trail_does_not_stop_a_session(self):
         orch = self.team(faults=False)
         orch.engine.memory.lesson("product", "PRD-IDS", "ids are unique", "s0")
@@ -700,6 +716,8 @@ class OpenAICompatible(HarnessCase):
             def do_POST(self):
                 seen["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 self.send_response(status)
+                if status == 429:
+                    self.send_header("Retry-After", "7")
                 self.end_headers()
                 for chunk in (chunks[:3] if cut else chunks) if status == 200 else []:
                     self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
@@ -734,6 +752,9 @@ class OpenAICompatible(HarnessCase):
         self.assertRaises(TransientError, self.serve(status=503)[0].chat, "s", [], [])
         self.assertRaises(FatalError, self.serve(status=401)[0].chat, "s", [], [])
         self.assertRaises(TransientError, self.serve(cut=True)[0].chat, "s", [], [])  # closed mid tool call: never a reply
+        with self.assertRaises(TransientError) as limited:
+            self.serve(status=429)[0].chat("s", [], [])
+        self.assertEqual(limited.exception.retry_after, 7.0)
 
 
 @unittest.skipUnless(importlib.util.find_spec("anthropic"), "anthropic SDK not installed")

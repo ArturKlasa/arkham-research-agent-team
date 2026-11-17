@@ -25,6 +25,18 @@ from dataclasses import dataclass, field
 class TransientError(Exception):
     """Worth retrying: rate limit, overload, network failure, malformed stream."""
 
+    def __init__(self, message: str, retry_after: float = 0.0):
+        super().__init__(message)
+        self.retry_after = retry_after  # seconds the server asked us to wait (Retry-After), 0 when it did not say
+
+
+def _retry_after(headers) -> float:
+    """A Retry-After header in seconds, capped at two minutes. The HTTP-date form and junk count as no hint."""
+    try:
+        return min(float((headers or {}).get("retry-after", "")), 120.0)
+    except ValueError:
+        return 0.0
+
 
 class FatalError(Exception):
     """Retrying cannot help: bad credentials, invalid request, model refusal."""
@@ -51,14 +63,23 @@ class Reply:
 
 def chat(llm, bus, cfg, system, messages, tools, on_text=None) -> Reply:
     """One model call with exponential backoff on transient errors. Retries are logged to the trail."""
+    streamed = []
+
+    def relay(text):
+        streamed.append(text)
+        on_text(text)
+
     for attempt in range(cfg.llm_retries + 1):
         try:
-            return llm.chat(system, messages, tools, on_text)
+            return llm.chat(system, messages, tools, relay if on_text else None)
         except TransientError as exc:
             if attempt == cfg.llm_retries:
                 raise
-            delay = round(cfg.retry_base * 2**attempt + random.uniform(0, cfg.retry_base), 1)
+            delay = round(max(cfg.retry_base * 2**attempt + random.uniform(0, cfg.retry_base), exc.retry_after), 1)
             bus.emit("llm_retry", error=str(exc), delay=delay)
+            if streamed:  # the text already shown is not part of any reply: say so, rather than silently showing a second version
+                on_text("\n[connection lost; the reply starts again]\n")
+                streamed.clear()
             time.sleep(delay)
     raise AssertionError("unreachable")
 
@@ -153,11 +174,13 @@ class AnthropicLLM:
                         on_text(event.text)
                 msg = stream.get_final_message()
         except (sdk.RateLimitError, sdk.APIConnectionError, self.dropped) as exc:
-            raise TransientError(f"{type(exc).__name__}: {exc}") from exc
+            raise TransientError(f"{type(exc).__name__}: {exc}", _retry_after(getattr(getattr(exc, "response", None), "headers", None))) from exc
         except sdk.APIStatusError as exc:
             # A status below 400 means the error arrived inside an already-open stream (typically "overloaded").
-            kind = TransientError if exc.status_code >= 500 or exc.status_code < 400 or exc.status_code in (408, 409) else FatalError
-            raise kind(f"{type(exc).__name__} ({exc.status_code}): {exc.message}") from exc
+            detail = f"{type(exc).__name__} ({exc.status_code}): {exc.message}"
+            if exc.status_code >= 500 or exc.status_code < 400 or exc.status_code in (408, 409):
+                raise TransientError(detail, _retry_after(exc.response.headers)) from exc
+            raise FatalError(detail) from exc
         except ValueError as exc:  # the SDK could not parse a streamed tool input at all: re-issue the turn
             raise TransientError(f"malformed tool input in stream: {exc}") from exc
         if msg.stop_reason is None:  # the connection closed cleanly before message_stop: text or tool input may be cut
@@ -245,7 +268,9 @@ class OpenAICompatLLM:
                             reply.stop = "max_tokens"
         except urllib.error.HTTPError as exc:  # must precede URLError, its base class
             detail = f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}"
-            raise (TransientError if exc.code in (408, 409, 429) or exc.code >= 500 else FatalError)(detail) from exc
+            if exc.code in (408, 409, 429) or exc.code >= 500:
+                raise TransientError(detail, _retry_after({k.lower(): v for k, v in (exc.headers or {}).items()})) from exc
+            raise FatalError(detail) from exc
         except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
             raise TransientError(f"{type(exc).__name__}: {exc}") from exc
         if not complete:  # closed without a finish reason or [DONE]: text or tool arguments may be cut
