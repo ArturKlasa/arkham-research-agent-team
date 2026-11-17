@@ -29,6 +29,7 @@ class Config:
     # Isolation
     sandbox: str = "auto"  # auto | bwrap | docker | none (unsafe: runs generated code on the host)
     docker_image: str = "python:3.12-slim"
+    docker_runtime: str = ""  # an OCI runtime for stronger isolation, when installed: runsc (gVisor) or kata-runtime (microVM)
     command_timeout: int = 120  # seconds per sandboxed command
 
     # Storage

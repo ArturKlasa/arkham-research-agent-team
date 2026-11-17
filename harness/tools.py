@@ -192,10 +192,13 @@ def run_sandboxed(cfg, workspace: Path, command: str) -> tuple[int, str]:
     mode = detect_sandbox() if cfg.sandbox == "auto" else cfg.sandbox
     env = None
     if mode == "bwrap":
-        argv = _bwrap(workspace) + ["sh", "-c", command]
+        argv = list(_cgroup_limits()) + _bwrap(workspace) + ["sh", "-c", command]
     elif mode == "docker":
         user = f"{os.getuid()}:{os.getgid()}"
-        argv = ["docker", "run", "--rm", "--network", "none", "--memory", "1g", "--cpus", "2", "--user", user, "-e", "HOME=/tmp"]
+        argv = ["docker", "run", "--rm", "--network", "none", "--memory", "1g", "--cpus", "2", "--pids-limit", str(MAX_PROCESSES)]
+        # no capabilities, no privilege gain through setuid binaries, and nothing writable but the workspace and a scratch /tmp
+        argv += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp", "--user", user, "-e", "HOME=/tmp"]
+        argv += ["--runtime", cfg.docker_runtime] if cfg.docker_runtime else []  # runsc (gVisor) or kata-runtime (a microVM per command)
         argv += ["-e", "PYTHONDONTWRITEBYTECODE=1", "-v", f"{workspace}:/work", "-w", "/work", cfg.docker_image]
         argv += ["timeout", str(cfg.command_timeout), "sh", "-c", command]  # the container enforces its own timeout
     elif mode == "none":  # explicit opt-out; still no secrets in the environment
@@ -203,14 +206,33 @@ def run_sandboxed(cfg, workspace: Path, command: str) -> tuple[int, str]:
     else:
         raise ValueError(f"unknown sandbox mode {mode!r}")
     try:
-        # wall-clock timeout only (docker adds memory/cpu caps); add cgroup limits or a microVM for hostile code
         done = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True, errors="replace", timeout=cfg.command_timeout + 15)
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {cfg.command_timeout}s"
     output = (done.stdout + done.stderr).strip() or "(no output)"
-    if mode == "bwrap" and done.returncode and output.startswith("bwrap:"):  # the sandbox failed, not the command
+    if mode == "bwrap" and done.returncode and output.startswith(("bwrap:", "Failed to start transient scope")):  # the sandbox failed, not the command
         raise RuntimeError(f"sandbox failure: {output[:500]}")
+    if done.returncode == 137 and mode != "none":  # SIGKILL: say why, so the agent does not just run it again
+        output += "\n(killed: the sandbox allows 1 GB of memory)"
     return done.returncode, clip(output)
+
+
+MAX_PROCESSES = 256  # processes and threads one sandboxed command may have: stops a fork bomb
+
+
+@functools.lru_cache(maxsize=None)
+def _cgroup_limits() -> tuple[str, ...]:
+    """Caps for bubblewrap like Docker's: a transient systemd scope (cgroup v2) limiting memory and processes.
+
+    The CPU quota takes effect only where the user session is delegated the cpu controller (many distributions
+    delegate memory and pids only); elsewhere the wall-clock timeout bounds CPU use.
+    """
+    argv = ("systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=1G", "-p", "MemorySwapMax=0", "-p", "CPUQuota=200%", "-p", f"TasksMax={MAX_PROCESSES}")
+    try:
+        works = subprocess.run(argv + ("true",), capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        works = False
+    return argv if works else ()  # ponytail: no systemd user session (a container, some CI) leaves the wall-clock timeout only; use docker there
 
 
 def _bwrap(workspace: Path) -> list[str]:

@@ -31,7 +31,7 @@ from harness.orchestrator import Orchestrator
 from harness.server import build
 from harness.memory import Memory
 from harness.rules import _buildable, _file_ownership, _files_written, _placeholders, _traceable, reaches_out
-from harness.tools import Workspace, _CheckedRedirects, check_public, detect_sandbox, html_to_text, _restore, _snapshot, make_tools, run_sandboxed, search_web
+from harness.tools import Workspace, _CheckedRedirects, _cgroup_limits, check_public, detect_sandbox, html_to_text, _restore, _snapshot, make_tools, run_sandboxed, search_web
 
 try:
     SANDBOX = detect_sandbox()
@@ -669,6 +669,12 @@ class Boundaries(HarnessCase):
         self.assertEqual(argv[argv.index("--network") + 1], "none")
         self.assertIn(f"{self.tmp}:/work", argv)  # the workspace is the only host path mounted
         self.assertEqual([a for a in argv if a == "-v"], ["-v"])
+        for flags in (["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"], ["--pids-limit", "256"], ["--memory", "1g"], ["--read-only", "--tmpfs", "/tmp"]):
+            self.assertEqual(argv[argv.index(flags[0]) :][: len(flags)], flags)
+        self.assertNotIn("--runtime", argv)
+        with unittest.mock.patch("harness.tools.subprocess.run", return_value=done) as run:
+            run_sandboxed(Config(sandbox="docker", docker_runtime="runsc"), self.tmp, "echo ok")  # gVisor, where it is installed
+        self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--runtime") + 1], "runsc")
         self.assertEqual(argv[-5:], ["timeout", "7", "sh", "-c", "echo ok"])
         with unittest.mock.patch("harness.tools.subprocess.run", side_effect=subprocess.TimeoutExpired("docker", 22)):
             self.assertEqual(run_sandboxed(cfg, self.tmp, "sleep 999"), (124, "timed out after 7s"))
@@ -716,6 +722,17 @@ class Boundaries(HarnessCase):
         self.assertNotEqual(code, 0)  # the connection attempt fails
         self.assertNotIn("KEY", output.splitlines()[0])
         self.assertEqual(output.splitlines()[1], "False")
+
+    @unittest.skipUnless(SANDBOX == "bwrap" and _cgroup_limits(), "needs bubblewrap and a systemd user session")
+    def test_a_sandboxed_command_cannot_exhaust_the_machines_memory_or_processes(self):
+        cfg = Config(sandbox="bwrap")
+        code, output = run_sandboxed(cfg, self.tmp, "python3 -c 'x = bytearray(3 * 1024**3); print(len(x))'")
+        self.assertEqual(code, 137)
+        self.assertIn("the sandbox allows 1 GB of memory", output)  # the agent is told why, not just "Killed"
+        bomb = "import os, time\nfor i in range(2000):\n    try:\n        if os.fork() == 0:\n            time.sleep(2)\n            os._exit(0)\n    except OSError:\n        print('refused after', i)\n        break\n"
+        (self.tmp / "bomb.py").write_text(bomb)
+        code, output = run_sandboxed(cfg, self.tmp, "python3 bomb.py")
+        self.assertRegex(output, r"refused after 2\d\d$")  # 256 processes, not 2000
 
 
 class Injection(HarnessCase):
