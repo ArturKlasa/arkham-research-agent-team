@@ -82,7 +82,11 @@ def _file_ownership(result, task, eng):
 def _files_written(result, task, eng):
     problems = []
     for name in task.meta["item"]["files"]:
-        path = eng.ws.root / name
+        try:
+            path = eng.ws.resolve(name)  # a command may have swapped an owned file for a symlink: never read past the workspace
+        except PermissionError:
+            problems.append(f"{name} points outside the workspace")
+            continue
         source = path.read_text(errors="replace") if path.is_file() else ""
         if not source.strip() and not (path.is_file() and path.name == "__init__.py"):  # a package marker may be empty
             problems.append(f"{name} is listed in the work item but is missing or empty")

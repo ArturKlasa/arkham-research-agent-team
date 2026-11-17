@@ -116,12 +116,12 @@ def _outward(eng, task) -> str:
         return ""
     lines = []
     for name in task.meta["item"]["files"]:
-        path = eng.ws.root / name
-        if name.endswith(".py") and path.is_file():
-            try:
+        try:
+            path = eng.ws.resolve(name)
+            if name.endswith(".py") and path.is_file():
                 lines += [f"- {name} {found}" for found in reaches_out(path.read_text(errors="replace"))]
-            except (SyntaxError, ValueError):
-                pass  # IMPL-FILES has already reported it
+        except (PermissionError, SyntaxError, ValueError):
+            pass  # IMPL-FILES has already reported it
     return "# Lines that reach outside the program (listed by the harness, not by the engineer)\n" + ("\n".join(lines) or "none")
 
 

@@ -439,6 +439,15 @@ class Boundaries(HarnessCase):
         self.assertEqual(check("pkg/__init__.py", "pkg/mod.py"), [])
         self.assertEqual([problem.split()[0] for problem in check("nul.py", "empty.py", "missing/__init__.py")], ["nul.py", "empty.py", "missing/__init__.py"])
 
+    def test_the_file_checks_never_read_through_a_symlink_out_of_the_workspace(self):
+        eng = self.team().engine
+        outside = self.tmp / "private.py"
+        outside.write_text("import os  # TODO the host's secret\n")
+        (eng.ws.root / "main.py").symlink_to(outside)
+        task = Task("impl:W1", "implement", "engineer", meta={"item": {"files": ["main.py"]}})
+        self.assertEqual(_files_written({}, task, eng), ["main.py points outside the workspace"])
+        self.assertNotIn("import os", auditor._outward(eng, task))
+
     def test_explicit_settings_beat_the_environment_which_beats_the_defaults(self):
         with unittest.mock.patch.dict(os.environ, {"HARNESS_PROVIDER": "scripted", "HARNESS_MAX_TURNS": "7"}):
             cfg = Config.load(provider="anthropic")
