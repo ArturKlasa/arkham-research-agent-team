@@ -209,6 +209,11 @@ class Pipeline(HarnessCase):
         engine.board.add(Task("impl:a", "implement", "engineer", ["spec"], meta={"item": {"files": ["test_a.py"]}}))
         self.assertEqual([f["task"] for f in auditor.run_suite(engine)], ["spec"])
 
+    def test_every_error_is_listed_even_one_recorded_without_a_traceback(self):
+        orch = self.team()
+        orch.engine.bus.emit("error", where="memory", error="OSError: read-only file system", will_retry=False)
+        self.assertIn("OSError: read-only file system", orch.command("/errors"))
+
     def test_a_pause_leaves_the_task_runnable_and_an_unfinished_run_cannot_be_approved(self):
         orch = self.team(faults=False)
 

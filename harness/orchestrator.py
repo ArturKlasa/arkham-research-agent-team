@@ -103,7 +103,7 @@ class Orchestrator:
             return "\n".join(_trail_line(ev) for ev in events) or "(no events)"
         if name == "/errors":
             errors = e.bus.read(type="error")
-            return "\n\n".join(f"#{ev['seq']} task={ev.get('task')} agent={ev.get('agent')} attempt={ev.get('attempt')} at {ev['where']}\n{ev['traceback']}" for ev in errors) or "(no errors)"
+            return "\n\n".join(f"#{ev['seq']} task={ev.get('task')} agent={ev.get('agent')} attempt={ev.get('attempt')} at {ev['where']}\n{ev.get('traceback', ev['error'])}" for ev in errors) or "(no errors)"
         if name == "/memory":
             return "\n".join(f"{m['kind']:<8} {m['role']:<10} x{m['hits']} {m['key']} {m['text'][:160]}" for m in e.memory.items) or "(empty)"
         return HELP
