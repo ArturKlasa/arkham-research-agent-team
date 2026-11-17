@@ -252,6 +252,14 @@ The test `test_a_poisoned_reference_file_cannot_make_an_obedient_agent_leak_a_se
 - **One owner per file.** A spec must assign every file to exactly one work item, and the write tool and the command tool both enforce it, so engineers cannot overwrite each other.
 - **Provider-neutral core.** Everything above `llm.py` uses three message shapes; a backend is one class with one method.
 
+## A recorded run
+
+`examples/books-api/` is one unedited session against the real models (Sonnet 5.5, with Opus 5.5 as the architect). The task was a standard-library HTTP JSON API over a mock book database, followed by `/status` and a one-off question. `transcript.txt` is the terminal output; `artifacts/`, `workspace/`, `board.json` and `trail.jsonl` are the session files, with absolute paths made relative. It shows three things:
+
+- The researcher tried a documentation URL it had made up, was refused by the fetch allow-list, searched for the page and then fetched it.
+- The first audit found that the plan had narrowed "search by author" to an author id. The run went back to the plan and redid everything after it. The second audit caught a README example that would not work as written, and only that work item was redone. The third audit passed.
+- The suite run by the harness passed: 705 s of task time, 76 model calls.
+
 ## Known limits and next steps
 
 - **Tasks run one at a time.** The board already knows which tasks are independent; running ready tasks concurrently needs a lock on the board and per-task output streams.
@@ -262,6 +270,9 @@ The test `test_a_poisoned_reference_file_cannot_make_an_obedient_agent_leak_a_se
 - **Memory retrieval is lexical** (word overlap weighted by rarity). Embeddings when the store grows.
 - **No human approval between steps.** The user reviews at the end; an optional pause after the PRD would catch scope mistakes earlier and cheaper.
 - **The gateway serves one session, one request at a time, over plain HTTP.** Put it behind TLS or an SSH tunnel for real remote use.
+- **The orchestrator chat lives in memory.** The board, artifacts and trail are on disk and `resume` continues the work, but a restarted process starts a fresh conversation.
+- **Model-call retries are short.** Backoff ignores `Retry-After`, so a long outage fails the task (resumable). A stream retried mid-reply prints its text twice.
+- **Readability debt.** Some lines are long and a few small helpers are repeated across modules.
 - **Long conversations are not compacted.** Expert conversations are short by construction (one task each); the orchestrator's history grows with the session.
 
 ## Tests
