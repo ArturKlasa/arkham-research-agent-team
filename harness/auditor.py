@@ -58,6 +58,9 @@ def run_suite(eng) -> list[dict]:
     if code == 0 and tested:
         return []
     builders = [t for t in eng.board.pipeline() if t.kind == "implement"]
+    if code in (126, 127):  # the shell could not run the command at all: the spec chose it, the code is not at fault
+        fix = "Make test_command a command that exists in the sandbox (Python standard library only), run from the workspace root."
+        return [_finding(SUITE.id, "spec", f"`{command}` could not be run (exit code {code}):\n{output[-3000:]}", fix)]
     if not tested and (code == 0 or "Ran 0 tests" in output):
         # A suite that tests nothing proves nothing. The spec owns the command and the test layout; the test files may be at fault too.
         evidence = f"`{command}` exited with code {code} without running a single test:\n{output[-3000:]}"

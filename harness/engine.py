@@ -83,7 +83,7 @@ class Engine:
         self.board.meta.update(audit_cycles=0, accepted=False)
         self.board.meta.setdefault("changes", []).append({"task": task_id, "text": feedback})
         self.board.invalidate(task_id, [])
-        self.memory.note("feedback", task.agent, f"A user asked for this change at the {task.kind} step: {feedback}", self.dir.name)
+        self._memory("note", "feedback", task.agent, f"A user asked for this change at the {task.kind} step: {feedback}", self.dir.name)
         return self.run()
 
     def changes(self, task: Task) -> str:
@@ -139,12 +139,19 @@ class Engine:
                 final = isinstance(exc, (FatalError, Block)) or task.attempts >= self.cfg.max_attempts
                 task.error = f"{type(exc).__name__}: {exc}"
                 task.status = "failed" if final else "pending"
-                if not final:
-                    task.feedback.append(f"Attempt {task.attempts} failed with {task.error}")
+                task.feedback.append(f"Attempt {task.attempts} failed with {task.error}")  # also when final: `resume` retries it
                 self.bus.emit("error", where="task", error=task.error, traceback=traceback.format_exc(), will_retry=not final)
             finally:
                 task.seconds = round(task.seconds + time.time() - started, 1)
                 self.board.save()
+
+    def _memory(self, method: str, *args):
+        """Memory makes later runs better; failing to read or write it must not fail this one."""
+        try:
+            return getattr(self.memory, method)(*args)
+        except (OSError, ValueError) as exc:
+            self.bus.emit("error", where="memory", error=f"{type(exc).__name__}: {exc}", will_retry=False)
+            return None
 
     def delegate(self, task: Task) -> dict:
         """Hand a task to its expert and return the accepted submission."""
@@ -174,7 +181,7 @@ class Engine:
         parts.append(self.changes(task))
         if task.feedback:
             parts.append("# Feedback you must address\n" + "\n".join(f"- {note}" for note in task.feedback))
-        recalled = self.memory.recall(task.agent, task.meta.get("question") or project, exclude_run=self.dir.name)
+        recalled = self._memory("recall", task.agent, task.meta.get("question") or project, self.dir.name) or []
         if recalled:
             parts.append("# Lessons and notes from earlier runs\n" + "\n".join(f"- {note}" for note in recalled))
         return "\n\n".join(filter(None, parts))
@@ -207,7 +214,7 @@ class Engine:
         if task.kind == "audit":  # before the audit is saved as done, so findings are never left unacted on
             self._act_on_audit(task.result["findings"])
         if task.kind == "research":
-            self.memory.note("research", "researcher", f"For the task \"{self.board.meta['task'][:200]}\": {task.result['summary'][:1500]}", self.dir.name)
+            self._memory("note", "research", "researcher", f"For the task \"{self.board.meta['task'][:200]}\": {task.result['summary'][:1500]}", self.dir.name)
 
     def _expand(self, spec: dict) -> None:
         """Fan the spec out into one engineer task per work item, wired by the items' dependencies."""
@@ -248,7 +255,7 @@ class Engine:
         self.bus.emit("rerun", tasks=sorted(blamed), cycle=self.board.meta["audit_cycles"])
 
     def _learn(self, role: str, rule_id: str, text: str) -> None:
-        self.memory.lesson(role, rule_id, text, self.dir.name)
+        self._memory("lesson", role, rule_id, text, self.dir.name)
         self.bus.emit("lesson", role=role, rule=rule_id)
 
     def _meter(self, event: dict) -> None:

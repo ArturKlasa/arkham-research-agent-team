@@ -42,7 +42,8 @@ class Memory:
         self._load()
 
     def _load(self) -> None:
-        self.items = list(read_jsonl(self.path))
+        need = {"kind", "role", "key", "text", "hits", "run"}  # a hand-edited or foreign line must not break every session
+        self.items = [m for m in read_jsonl(self.path) if isinstance(m, dict) and need <= m.keys()]
 
     @contextmanager
     def _update(self):

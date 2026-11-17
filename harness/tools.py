@@ -110,8 +110,10 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None)
         # The sandbox mounts the whole workspace writable, so the write_file ownership rule is enforced here too:
         # whatever a command changes outside the engineer's own files is put back.
         before = _snapshot(ws.root, writable) if writable is not None else None
-        code, output = run_sandboxed(cfg, ws.root, a["command"])
-        undone = _restore(ws.root, writable, before) if before is not None else []
+        try:
+            code, output = run_sandboxed(cfg, ws.root, a["command"])
+        finally:
+            undone = _restore(ws.root, writable, before) if before is not None else []
         note = f"\nnote: files a command creates or changes outside your work item do not persist; undone: {', '.join(undone[:20])}" if undone else ""
         return f"exit code {code}\n{output}{note}"
 
@@ -145,8 +147,8 @@ def _snapshot(root: Path, own: set) -> dict:
     """Content of every file outside `own`, by workspace path. A symlink is recorded as its target, never followed."""
     # held in memory per command, contents only (not modes): fine for generated projects; an overlay mount scales further
     found = {}
-    for folder, _, names in os.walk(root):
-        for name in names:
+    for folder, dirs, names in os.walk(root):  # walk lists a symlink to a directory with the directories, unfollowed
+        for name in names + [d for d in dirs if os.path.islink(os.path.join(folder, d))]:
             path = Path(folder, name)
             rel = str(path.relative_to(root))
             if rel not in own and (path.is_symlink() or path.is_file()):
@@ -158,12 +160,15 @@ def _restore(root: Path, own: set, before: dict) -> list[str]:
     """Put back every file outside `own` that differs from the snapshot. Returns their names."""
     after = _snapshot(root, own)
     changed = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
-    for name in reversed(changed):  # children first, in case a directory took a file's place
+    real = root.resolve()
+    inside = lambda name: Path(os.path.realpath((root / name).parent)) == real / Path(name).parent  # no symlink on the way
+    for name in changed:  # parents first: removing a directory or symlink that took a file's place takes its children too
         path = root / name
-        with contextlib.suppress(FileNotFoundError, NotADirectoryError):
-            shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
+        if inside(name):
+            with contextlib.suppress(FileNotFoundError, NotADirectoryError):
+                shutil.rmtree(path) if path.is_dir() and not path.is_symlink() else path.unlink()
     for name in changed:
-        if name in before:
+        if name in before and inside(name):
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_bytes(before[name]) if isinstance(before[name], bytes) else os.symlink(before[name], root / name)
     return changed
@@ -192,7 +197,10 @@ def run_sandboxed(cfg, workspace: Path, command: str) -> tuple[int, str]:
         done = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True, errors="replace", timeout=cfg.command_timeout + 15)
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {cfg.command_timeout}s"
-    return done.returncode, clip((done.stdout + done.stderr).strip() or "(no output)")
+    output = (done.stdout + done.stderr).strip() or "(no output)"
+    if mode == "bwrap" and done.returncode and output.startswith("bwrap:"):  # the sandbox failed, not the command
+        raise RuntimeError(f"sandbox failure: {output[:500]}")
+    return done.returncode, clip(output)
 
 
 def _bwrap(workspace: Path) -> list[str]:

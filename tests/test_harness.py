@@ -7,6 +7,7 @@ mistake of every kind on purpose.    python3 -m unittest discover -s tests -v
 import importlib.util
 import json
 import os
+import shutil
 import tempfile
 import threading
 import unittest
@@ -27,7 +28,7 @@ from harness.orchestrator import Orchestrator
 from harness.server import build
 from harness.memory import Memory
 from harness.rules import _buildable, _file_ownership, _files_written, _placeholders
-from harness.tools import Workspace, _CheckedRedirects, check_public, detect_sandbox, make_tools, run_sandboxed
+from harness.tools import Workspace, _CheckedRedirects, check_public, detect_sandbox, _restore, _snapshot, make_tools, run_sandboxed
 
 try:
     SANDBOX = detect_sandbox()
@@ -118,6 +119,7 @@ class Pipeline(HarnessCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual((tasks["plan"]["status"], tasks["plan"]["runs"]), ("failed", 3))
         self.assertEqual(tasks["prd"]["status"], "pending")  # nothing downstream ran
+        self.assertEqual(orch.engine.board.tasks["plan"].feedback[-1], "Attempt 3 failed with RuntimeError: still broken")  # the resumed attempt learns why it stopped
 
         orch.engine.llm = ScriptedTeam(faults=False)  # the cause is fixed
         self.assertEqual(orch.engine.resume()["status"], "completed")
@@ -190,6 +192,12 @@ class Pipeline(HarnessCase):
         for name, deps in [("a", []), ("b", ["a"]), ("c", ["b"]), ("d", [])]:
             engine.board.add(Task(f"impl:{name}", "implement", "engineer", ["spec"] + [f"impl:{d}" for d in deps], meta={"item": {"files": [f"test_{name}.py"]}}))
         self.assertEqual([f["task"] for f in auditor.run_suite(engine)], ["impl:a", "impl:b", "impl:c"])  # not d: c does not build on it
+
+    def test_a_test_command_that_cannot_run_is_the_specs_fault(self):
+        engine = self.team().engine
+        engine.board.add(Task("spec", "spec", "architect", status="done", result={"test_command": "no-such-runner tests"}))
+        engine.board.add(Task("impl:a", "implement", "engineer", ["spec"], meta={"item": {"files": ["test_a.py"]}}))
+        self.assertEqual([f["task"] for f in auditor.run_suite(engine)], ["spec"])
 
     def test_a_pause_leaves_the_task_runnable_and_an_unfinished_run_cannot_be_approved(self):
         orch = self.team(faults=False)
@@ -380,12 +388,35 @@ class Boundaries(HarnessCase):
         self.assertEqual(again.engine.start(TASK)["status"], "completed")
         self.assertEqual(again.engine.bus.read(type="task_start")[0]["task"], "research")  # the first event after the torn line is not lost with it
 
+    def test_unusable_memory_does_not_fail_the_run(self):
+        path = self.tmp / "m.jsonl"
+        path.write_text('{"kind": "lesson"}\n[1]\n{"kind": "lesson", "role": "r", "key": "K", "text": "t", "hits": 1, "run": "s0"}\n')
+        self.assertEqual(Memory(path).recall("r", "anything"), ["[K] t (violated 1x before)"])  # incomplete records are skipped
+        (self.tmp / "file").write_text("")  # the memory directory cannot be created: every write fails
+        orch = self.team()
+        orch.engine.memory.path = self.tmp / "file" / "memory.jsonl"
+        self.assertEqual(orch.engine.start(TASK)["status"], "completed")
+        self.assertTrue(self.events(orch, type="error", where="memory"))  # reported, not fatal
+
     def test_submissions_are_validated_against_their_schema(self):
         schema = {"type": "object", "required": ["id", "tags"], "properties": {"id": {"type": "string", "minLength": 1}, "tags": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}}}}
         self.assertEqual(schema_errors({"id": "x", "tags": ["a"]}, schema), [])
         self.assertEqual(len(schema_errors({"id": "", "tags": ["a", "z", 3]}, schema)), 3)
         self.assertEqual(schema_errors("not json", schema), ["$: expected object, got str"])
         self.assertEqual(schema_errors({"tags": []}, schema), ["$.id: required field is missing"])
+
+    def test_restoring_files_never_follows_a_symlink_out_of_the_workspace(self):
+        root, outside = self.tmp / "ws", self.tmp / "outside"
+        (root / "a").mkdir(parents=True)
+        outside.mkdir()
+        (root / "a" / "x").write_text("ours")
+        (outside / "x").write_text("not ours")
+        before = _snapshot(root, set())
+        shutil.rmtree(root / "a")  # what a command could do: swap a directory for a symlink out of the workspace
+        (root / "a").symlink_to(outside)
+        _restore(root, set(), before)
+        self.assertEqual((outside / "x").read_text(), "not ours")
+        self.assertEqual(((root / "a").is_symlink(), (root / "a" / "x").read_text()), (False, "ours"))
 
     def test_a_command_cannot_change_files_outside_the_engineers_work_item(self):
         ws = Workspace(self.tmp / "ws")
