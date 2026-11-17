@@ -1,0 +1,471 @@
+{
+ "meta": {
+  "task": "Build a small HTTP JSON API, using only the Python standard library (no third-party dependencies), for consulting a mock database of books. Endpoints: list all books, get one book by id (return 404 if missing), and search books by author. Include unit tests.",
+  "audit_cycles": 1,
+  "accepted": false
+ },
+ "tasks": [
+  {
+   "id": "research",
+   "kind": "research",
+   "agent": "researcher",
+   "deps": [],
+   "status": "done",
+   "attempts": 1,
+   "runs": 1,
+   "version": 1,
+   "feedback": [],
+   "result": {
+    "summary": "sources/ is empty, so there are no reference files. I read the official Python http.server documentation (opened at https://docs.python.org/3/library/http.server.html). It confirms the API can be built with the standard library alone. The design suggestions below (routes, JSON shape, test approach) are my recommendations, not facts from a source.",
+    "findings": [
+     {
+      "claim": "http.server provides HTTPServer and ThreadingHTTPServer (the latter added in 3.7). Both need a RequestHandlerClass. BaseHTTPRequestHandler must be subclassed, with do_GET etc. implemented. The method name is built from the request method.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "The handler's `path` attribute includes the query string, so the code must split it itself (e.g. with urllib.parse) to handle /books?author=X and /books/<id>. This follows from the documented `path` attribute. The urllib.parse suggestion is mine and I did not open that doc.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "send_response(code), send_header(), and end_headers() are used to build a reply. The body is written to wfile. send_error(code, message) sends an error reply, but its default content type is text/html (error_content_type). A JSON API should write its own JSON 404 body, or override error_content_type and error_message_format.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "protocol_version defaults to HTTP/1.0. If set to HTTP/1.1, every response must carry an accurate Content-Length header.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "http.server is not recommended for production. Its send_header does no CRLF validation, so untrusted input must not be echoed into headers. This is fine for a mock API.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     },
+     {
+      "claim": "The docs show a run() pattern: build the server with a (host, port) tuple and call serve_forever(). For tests, binding to port 0 lets the OS pick a free port (my suggestion, not stated in the doc). Run the server in a thread and call shutdown() afterwards.",
+      "source": "https://docs.python.org/3/library/http.server.html"
+     }
+    ],
+    "open_questions": [
+     "Exact route shapes (/books, /books/<id>, /books?author=X or /authors/<name>/books) are not specified by the task. The team must choose.",
+     "Whether author search should be case-insensitive or substring-based is unspecified. The team must decide.",
+     "The behaviour for a non-integer id (400 or 404) is unspecified. I did not open the unittest or json docs. Those APIs are standard library but were not verified here."
+    ]
+   },
+   "error": null,
+   "seconds": 11.1,
+   "tokens": 18299,
+   "meta": {
+    "consulted": [
+     "https://docs.python.org/3/library/http.server.html"
+    ],
+    "judged": 1
+   }
+  },
+  {
+   "id": "plan",
+   "kind": "plan",
+   "agent": "planner",
+   "deps": [
+    "research"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 1,
+   "version": 1,
+   "feedback": [],
+   "result": {
+    "goal": "Deliver a stdlib-only Python HTTP JSON API over an in-memory mock book database, with endpoints to list books, get a book by id (404 if missing) and search by author, plus unit tests.",
+    "in_scope": [
+     "Single package/module using http.server (ThreadingHTTPServer) and BaseHTTPRequestHandler, json, urllib.parse only",
+     "In-memory mock data: ~8-10 books with id (int), title, author, year",
+     "GET /books returns a JSON list of all books",
+     "GET /books/<id> returns one book; 404 JSON body {\"error\": ...} if the id is missing",
+     "GET /books?author=X returns the matching books; case-insensitive substring match; empty list if none match",
+     "Non-integer id returns 400 with JSON error; unknown route returns 404 JSON; non-GET methods return 405 JSON",
+     "All responses use Content-Type application/json; charset=utf-8 and an accurate Content-Length",
+     "Own JSON error writer instead of send_error, which defaults to HTML",
+     "unittest suite: unit tests for the data/search logic, plus integration tests that start the server on port 0 in a thread and call it with urllib.request, then shut it down",
+     "Short README with run and test commands (python -m unittest)",
+     "Server entry point with host/port configurable, default 127.0.0.1:8000"
+    ],
+    "out_of_scope": [
+     "Real database or persistence",
+     "Create/update/delete endpoints and authentication",
+     "Pagination, sorting, and other filters",
+     "Production hardening, TLS, and deployment",
+     "Third-party dependencies, frameworks, and linters",
+     "OpenAPI docs"
+    ],
+    "milestones": [
+     "1. Fix design decisions: routes, JSON shape, status codes, search semantics, and record them in the README",
+     "2. Implement the data layer: mock books and pure functions list_books, get_book(id), search_by_author(name)",
+     "3. Implement the HTTP handler and routing, with query parsing, JSON helper and error responses, and a main() that serves",
+     "4. Write unit tests for the data layer and handler tests against a live server on an ephemeral port (200, 404 missing id, 400 bad id, author search hit, miss, case-insensitivity, unknown route, 405)",
+     "5. Run the full test suite, do a manual curl smoke test, and finalise the README"
+    ],
+    "risks": [
+     "http.server HTTP/1.0 vs 1.1: with HTTP/1.1 a wrong Content-Length makes clients hang; compute the length from the encoded bytes",
+     "Author names in the query need URL-decoding and may contain spaces or unicode; use parse_qs",
+     "Tests that leave the server running or use a fixed port can hang or be flaky; use port 0, shutdown() and server_close() in tearDown",
+     "Never echo user input into headers (no CRLF validation in send_header)",
+     "Handler logging clutters test output; override log_message"
+    ],
+    "assumptions": [
+     "Python 3.7 or later is available (ThreadingHTTPServer)",
+     "The route shape /books, /books/<id>, /books?author=X is acceptable since the task does not specify one",
+     "Author search is case-insensitive substring matching",
+     "A non-integer id returns 400, a valid but unknown id returns 404",
+     "A trailing slash is tolerated or returns 404, and it is documented either way",
+     "No reference files exist in sources/, so the design relies on the official http.server docs"
+    ]
+   },
+   "error": null,
+   "seconds": 9.2,
+   "tokens": 3575,
+   "meta": {
+    "consulted": [],
+    "judged": 1
+   }
+  },
+  {
+   "id": "prd",
+   "kind": "prd",
+   "agent": "product",
+   "deps": [
+    "plan"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 1,
+   "version": 1,
+   "feedback": [],
+   "result": {
+    "overview": "A stdlib-only Python (3.7+) HTTP JSON API over an in-memory mock book database. It serves GET /books, GET /books/<id> and GET /books?author=X. It has JSON error handling and a unittest suite. Out of scope: persistence, write endpoints, auth, pagination, sorting, other filters, production hardening, TLS, third-party dependencies, OpenAPI.",
+    "requirements": [
+     {
+      "id": "R1",
+      "text": "The service uses only the Python standard library (http.server ThreadingHTTPServer/BaseHTTPRequestHandler, json, urllib.parse); no third-party dependencies.",
+      "acceptance": "Static inspection of all source and test imports shows only stdlib modules; the project has no requirements/dependency file listing third-party packages; the server starts on a clean Python 3.7+ install."
+     },
+     {
+      "id": "R2",
+      "text": "An in-memory mock dataset of 8 to 10 books, each with int id, string title, string author and int year. Ids are unique. Pure functions list_books(), get_book(id) and search_by_author(name) are provided.",
+      "acceptance": "A unit test asserts the dataset has 8-10 records, each with exactly those fields and types, ids unique; and that the three functions return the expected results."
+     },
+     {
+      "id": "R3",
+      "text": "GET /books returns 200 with a JSON array of all books.",
+      "acceptance": "Integration test: GET /books returns status 200 and a body that parses to a list equal to the full dataset."
+     },
+     {
+      "id": "R4",
+      "text": "GET /books/<id> with an existing integer id returns 200 and that single book as a JSON object.",
+      "acceptance": "Integration test: GET /books/<existing id> returns 200 and a JSON object equal to that book record."
+     },
+     {
+      "id": "R5",
+      "text": "GET /books/<id> with a valid integer id that does not exist returns 404 with JSON body {\"error\": <message>}.",
+      "acceptance": "Integration test: GET /books/99999 returns 404 and a body that parses to an object containing a string \"error\" key."
+     },
+     {
+      "id": "R6",
+      "text": "GET /books/<id> with a non-integer id returns 400 with JSON body {\"error\": <message>}.",
+      "acceptance": "Integration test: GET /books/abc returns 400 and a JSON object with a string \"error\" key."
+     },
+     {
+      "id": "R7",
+      "text": "GET /books?author=X returns 200 with a JSON array of books whose author contains X as a case-insensitive substring; an empty array if none match. The value is URL-decoded (spaces, unicode).",
+      "acceptance": "Integration tests: a known author name returns the expected books; a differently-cased partial name returns the same; a non-matching name returns 200 and []; a URL-encoded name with a space matches correctly."
+     },
+     {
+      "id": "R8",
+      "text": "Unknown routes return 404 with a JSON error body; non-GET methods (e.g. POST, PUT, DELETE) return 405 with a JSON error body.",
+      "acceptance": "Integration tests: GET /nope returns 404 with JSON \"error\"; POST, PUT and DELETE to /books each return 405 with JSON \"error\"."
+     },
+     {
+      "id": "R9",
+      "text": "Every response, including errors, has Content-Type application/json; charset=utf-8 and a Content-Length equal to the byte length of the body. Errors are written by a custom JSON writer, not send_error. User input is never echoed into headers.",
+      "acceptance": "Integration tests check, for 200, 404, 400 and 405 responses, that the Content-Type header equals application/json; charset=utf-8 and int(Content-Length) equals len(body bytes)."
+     },
+     {
+      "id": "R10",
+      "text": "The server entry point accepts configurable host and port, defaulting to 127.0.0.1:8000, and the handler's request logging is suppressed or overridden so it does not clutter test output.",
+      "acceptance": "Running the entry point with no args listens on 127.0.0.1:8000; passing host/port arguments changes the bind address; the test run prints no per-request log lines."
+     },
+     {
+      "id": "R11",
+      "text": "A unittest suite covers data-layer unit tests and integration tests against a live server started on port 0 in a thread, shut down with shutdown() and server_close() in tearDown/tearDownClass.",
+      "acceptance": "`python -m unittest` exits 0, runs tests covering R2-R9, finishes without hanging, and uses no fixed port."
+     },
+     {
+      "id": "R12",
+      "text": "A short README documents run and test commands (python -m unittest), routes, JSON shape, status codes, search semantics and trailing-slash behaviour.",
+      "acceptance": "README exists and contains the run command, the test command, all three endpoints, the error codes 400/404/405, the case-insensitive substring rule and a statement of trailing-slash behaviour."
+     }
+    ]
+   },
+   "error": null,
+   "seconds": 11.3,
+   "tokens": 5090,
+   "meta": {
+    "consulted": [],
+    "judged": 1
+   }
+  },
+  {
+   "id": "spec",
+   "kind": "spec",
+   "agent": "architect",
+   "deps": [
+    "prd"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "design": "Stdlib-only book API (Python 3.7+). No dependency file is needed or allowed.\n\nIMPORT ALLOWLIST (one shared contract for all work items)\nThe only top-level modules any .py file in bookapi/ or tests/ may import are listed in this set. It is the single source of truth.\nALLOWED_TOP_LEVEL = {\"__future__\", \"argparse\", \"ast\", \"contextlib\", \"copy\", \"http\", \"io\", \"json\", \"os\", \"re\", \"sys\", \"threading\", \"typing\", \"unittest\", \"urllib\", \"bookapi\", \"tests\"}\n- The set covers these submodules: http.server, urllib.parse, urllib.request, urllib.error and unittest.mock. Only the top-level name before the first dot is checked.\n- W1 defines this exact set as the constant ALLOWED_TOP_LEVEL in tests/test_data.py. The R1 test compares against this set only. It does not use sys.stdlib_module_names and has no other fallback.\n- W2 (server.py, __main__.py, test_server.py) must not import any module outside this set. For example, use os rather than pathlib, and io.StringIO with contextlib.redirect_stderr/redirect_stdout.\n- Relative imports (ImportFrom with level > 0) count as local and are allowed.\n- Type hints: Python 3.7 cannot evaluate `dict | None`. Use typing.Optional/List/Dict, or put `from __future__ import annotations` at the top of the file.\n\nLAYOUT\nbookapi/__init__.py   package marker. Has a docstring and __all__ only.\nbookapi/data.py       mock data plus pure functions (no I/O)\nbookapi/server.py     HTTP handler, routing, JSON writer, make_server(), main()\nbookapi/__main__.py   `from bookapi.server import main; raise SystemExit(main())`\ntests/__init__.py     empty. Needed so `python3 -m unittest` discovery finds tests/.\ntests/test_data.py    data-layer unit tests plus the R1 import check\ntests/test_server.py  integration tests against a live server on port 0\nREADME.md\n\nDATA MODEL (bookapi/data.py)\nBOOKS is a module-level tuple of 10 dicts. Each dict has exactly these keys: {\"id\": int, \"title\": str, \"author\": str, \"year\": int}.\n- Ids are 1..10 and unique.\n- At least 2 books share an author: \"Jane Austen\" x2 and \"George Orwell\" x2.\n- One author has a non-ASCII name: \"Gabriel Garc\u00eda M\u00e1rquez\".\n\nFunctions:\n- list_books() -> List[dict]: copies (dict(b)) of all books in id order.\n- get_book(book_id: int) -> Optional[dict]: a copy of the matching book, or None.\n- search_by_author(name: str) -> List[dict]: copies of the books where name.casefold() in book[\"author\"].casefold(), in id order. An empty name matches all books. The input is not stripped.\n\nHTTP CONTRACT (bookapi/server.py)\nThe server keeps the default protocol_version, HTTP/1.0, so the connection closes after each response. The path is split with urllib.parse.urlsplit(self.path). Routing is exact, with no trailing-slash tolerance.\n\nGET \"/books\":\n- If the query contains an author param, parse it with qs = parse_qs(query, keep_blank_values=True) and take qs[\"author\"][0] (UTF-8 percent and + decoding). Return 200 with search_by_author(value).\n- Otherwise return 200 with list_books(). Other params are ignored.\n\nGET paths that match ^/books/([^/]+)$:\n- If the segment matches ^[0-9]+$, convert it with int() and look it up. Return 200 with the book object, or 404 {\"error\": \"Book not found\"}.\n- Otherwise return 400 {\"error\": \"Invalid book id; must be a non-negative integer\"}.\n- The query string is ignored.\n\nAny other GET path returns 404 {\"error\": \"Not found\"}. This includes \"/books/\" and \"/books/1/\".\n\nPOST, PUT, DELETE, PATCH, HEAD and OPTIONS on any path return 405 {\"error\": \"Method not allowed\"} plus the header \"Allow: GET\". A HEAD response sends the headers (Content-Length of the would-be body included) but no body.\n\nA success body is the bare JSON array or object. An error body is {\"error\": \"<fixed constant message>\"}. User input never reaches headers.\n\nclass BookRequestHandler(BaseHTTPRequestHandler):\n- server_version = \"BookAPI/1.0\"\n- _send_json(self, status, payload, extra_headers=None, include_body=True). This is the only response writer; send_error is never used.\n  1. body = json.dumps(payload, ensure_ascii=False).encode(\"utf-8\")\n  2. send_response(status)\n  3. Content-Type: application/json; charset=utf-8\n  4. Content-Length: str(len(body))\n  5. the extra headers\n  6. end_headers()\n  7. if include_body, wfile.write(body)\n- _send_error_json(status, message, **kw) calls _send_json(status, {\"error\": message}, **kw).\n- do_GET implements the routing above.\n- _method_not_allowed(include_body=True) sends the 405. do_POST, do_PUT, do_DELETE, do_PATCH and do_OPTIONS call it. do_HEAD calls it with include_body=False.\n- log_message(self, format, *args) is a no-op.\n\nModule functions:\n- make_server(host=\"127.0.0.1\", port=8000) -> http.server.ThreadingHTTPServer. It binds BookRequestHandler and sets daemon_threads = True.\n- main(argv=None) -> int:\n  - argparse options: --host (default 127.0.0.1) and --port (int, default 8000).\n  - It calls make_server(args.host, args.port) through the module-global name, so tests can monkeypatch it.\n  - It prints \"Serving on http://HOST:PORT\" using server.server_address.\n  - It calls serve_forever(). A KeyboardInterrupt is caught quietly. server_close() runs in a finally block. Returns 0.\n- The module ends with an `if __name__ == \"__main__\": sys.exit(main())` guard.\n\nTESTS\ntests/test_data.py:\n- BOOKS has 8 to 10 records. Each has exactly the 4 keys with the right types; id and year are int and not bool. Ids are unique.\n- list_books() equals list(BOOKS), and mutating its result does not change BOOKS.\n- get_book returns the book for a hit and None for a miss.\n- search_by_author:\n  - exact author name\n  - partial, differently cased name gives the same result\n  - a miss returns []\n  - \"garc\u00eda\" matches\n- R1 import check:\n  - Walk bookapi/ and tests/ with os.walk. The roots are found from os.path.dirname(os.path.abspath(__file__)) and its parent.\n  - Parse each .py file with ast.parse (encoding utf-8).\n  - For ast.Import, take alias.name.split(\".\")[0]. For ast.ImportFrom with level == 0, take module.split(\".\")[0].\n  - Assert that every name found is in ALLOWED_TOP_LEVEL.\n\ntests/test_server.py (imports limited to ALLOWED_TOP_LEVEL):\n- setUpClass:\n  - server = make_server(\"127.0.0.1\", 0)\n  - port = server.server_address[1]\n  - start a daemon threading.Thread(target=server.serve_forever)\n- tearDownClass: server.shutdown(), server.server_close(), thread.join(5).\n- request(method, path) -> (status, headers, body_bytes). It uses urllib.request.Request plus urlopen(timeout=5) and catches urllib.error.HTTPError to get the code, headers and body.\n- assert_json_headers(headers, body) checks Content-Type == \"application/json; charset=utf-8\" and int(Content-Length) == len(body). It runs on every response.\n- Cases:\n  - /books equals data.list_books()\n  - /books/1 equals get_book(1)\n  - /books/99999 returns 404 with a str error\n  - /books/abc returns 400\n  - ?author=orwell and ?author=ORWELL give the same 2 books\n  - ?author=zzz returns 200 and []\n  - ?author=jane%20austen and ?author=jane+austen both match 2 books\n  - ?author=Garc%C3%ADa matches\n  - /nope and /books/ return 404\n  - POST, PUT and DELETE on /books return 405 with Allow: GET\n- Silent logging: wrap one request in contextlib.redirect_stderr(io.StringIO()) and assert the buffer stays empty.\n- main() arguments:\n  - Use unittest.mock.patch(\"bookapi.server.make_server\") with a stub that records its args. The stub returns a fake server with server_address set, serve_forever raising KeyboardInterrupt, and server_close as a no-op.\n  - main([]) calls the stub with (\"127.0.0.1\", 8000).\n  - main([\"--host\", \"0.0.0.0\", \"--port\", \"9001\"]) calls it with (\"0.0.0.0\", 9001).\n  - Both return 0. Stdout is captured with contextlib.redirect_stdout(io.StringIO()).",
+    "work_items": [
+     {
+      "id": "W1",
+      "title": "Data layer, data unit tests and import-allowlist check",
+      "description": "Create bookapi/__init__.py with a docstring and __all__. Create bookapi/data.py with BOOKS (10 records, including Jane Austen x2, George Orwell x2 and Gabriel Garc\u00eda M\u00e1rquez) and list_books, get_book and search_by_author exactly as in the design. Use typing hints or __future__ annotations so the code runs on 3.7. Create tests/__init__.py (empty). Create tests/test_data.py covering dataset shape, types and unique ids; copy semantics; hit and miss; case-insensitive partial match; and the unicode match. It also defines the constant ALLOWED_TOP_LEVEL exactly as listed in the design's IMPORT ALLOWLIST section (no sys.stdlib_module_names, no other additions). An ast-based test then walks bookapi/ and tests/ with os.walk and asserts that every absolute import's top-level name is in that set. Relative imports are allowed. Import only modules from ALLOWED_TOP_LEVEL.",
+      "files": [
+       "bookapi/__init__.py",
+       "bookapi/data.py",
+       "tests/__init__.py",
+       "tests/test_data.py"
+      ],
+      "covers": [
+       "R1",
+       "R2",
+       "R11"
+      ],
+      "depends_on": []
+     },
+     {
+      "id": "W2",
+      "title": "HTTP server, entry point and integration tests",
+      "description": "Implement bookapi/server.py: BookRequestHandler with _send_json/_send_error_json (never send_error); exact routing for /books, /books?author= (parse_qs with keep_blank_values) and /books/<id> (400 unless ^[0-9]+$, 404 if missing); 404 for other paths, including trailing slashes; 405 with Allow: GET for POST/PUT/DELETE/PATCH/OPTIONS/HEAD, with no body for HEAD; and a no-op log_message. Add make_server(host, port), returning a ThreadingHTTPServer with daemon_threads=True, and main(argv) with argparse --host/--port defaulting to 127.0.0.1:8000. Create bookapi/__main__.py. Write tests/test_server.py with a live server on port 0, started in setUpClass and stopped in tearDownClass with shutdown/server_close/join. Test all status codes; Content-Type and Content-Length on every response; the author search cases (case, miss, %20 and +, unicode); silent logging via contextlib.redirect_stderr(io.StringIO()); and main() argument handling via unittest.mock.patch of bookapi.server.make_server. HARD CONSTRAINT: every import in these three files must have its top-level name in the design's ALLOWED_TOP_LEVEL set. Use no pathlib or any other module outside it, or W1's R1 test fails.",
+      "files": [
+       "bookapi/server.py",
+       "bookapi/__main__.py",
+       "tests/test_server.py"
+      ],
+      "covers": [
+       "R1",
+       "R3",
+       "R4",
+       "R5",
+       "R6",
+       "R7",
+       "R8",
+       "R9",
+       "R10",
+       "R11"
+      ],
+      "depends_on": [
+       "W1"
+      ]
+     },
+     {
+      "id": "W3",
+      "title": "README",
+      "description": "Write README.md covering: requirements (Python 3.7+, no dependencies); the run command `python3 -m bookapi [--host H] [--port P]` (default 127.0.0.1:8000); the test command `python3 -m unittest -v` (python -m unittest); the three endpoints (GET /books, GET /books/<id>, GET /books?author=X) with example curl calls and JSON shapes; the error body {\"error\": ...}; status codes 200/400/404/405 and when each occurs; search semantics (case-insensitive substring on author, URL-decoded, an empty value matches all, no match returns []); and trailing-slash behaviour (/books/ and /books/1/ return 404).",
+      "files": [
+       "README.md"
+      ],
+      "covers": [
+       "R12"
+      ],
+      "depends_on": [
+       "W2"
+      ]
+     }
+    ],
+    "test_command": "python3 -m unittest -v",
+    "run_command": "python3 -m bookapi --host 127.0.0.1 --port 8000"
+   },
+   "error": null,
+   "seconds": 85.8,
+   "tokens": 23953,
+   "meta": {
+    "consulted": [],
+    "judged": 2
+   }
+  },
+  {
+   "id": "impl:W1",
+   "kind": "implement",
+   "agent": "engineer",
+   "deps": [
+    "spec"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "summary": "I updated W1 to match the revised spec. The import check now uses only the design's exact allowlist, and the full test suite passes.\n\n- **Import allowlist in `tests/test_data.py`:**\n  - I removed my wider allowlist (which had extras such as `pathlib`, `socket` and `time`) and the fallback that accepted any module in Python's own stdlib list on 3.10 and newer.\n  - `ALLOWED_TOP_LEVEL` is now the design's set copied exactly, with nothing added: `__future__`, `argparse`, `ast`, `contextlib`, `copy`, `http`, `io`, `json`, `os`, `re`, `sys`, `threading`, `typing`, `unittest`, `urllib`, `bookapi`, `tests`.\n  - The check uses `os.walk` to go through `bookapi/` and `tests/`, finding both from the test file's own location. It parses each `.py` file and checks the first part of every absolute import name against that set. Relative imports are allowed.\n  - A new test checks the set still has 17 entries.\n  - The test file no longer imports `sys`.\n- **Type hints in `bookapi/data.py`:** I added `typing` hints (`List`, `Optional`, `Dict`) that work on Python 3.7. The data and behaviour are unchanged: `BOOKS` is a tuple of 10 records with ids 1 to 10, Jane Austen and George Orwell twice each, and \"Gabriel Garc\u00eda M\u00e1rquez\". All three functions return copies, and author search is case-insensitive substring matching in id order.\n- **Unchanged:** `bookapi/__init__.py` (docstring and `__all__` only) and the empty `tests/__init__.py`. The data tests still cover the dataset's shape and types, unique ids, copies, hit and miss, case-insensitive partial matching and the unicode match.\n\nOne addition the spec doesn't ask for: I kept the test that fails if a `requirements.txt`, `Pipfile` or `poetry.lock` file exists, because R1 says the project has no dependency file. W2's server and test files import only allowed modules, so they pass the stricter check.",
+    "tests": "From the workspace root I ran `python3 -m unittest -v`: it exited with code 0, and all 47 tests passed in about 2 seconds (the data tests plus W2's server tests). I also ran `python3 -m unittest tests.test_data -v` on its own: 19 tests ran and all passed. `tests/__init__.py` is 0 bytes."
+   },
+   "error": null,
+   "seconds": 64.2,
+   "tokens": 106442,
+   "meta": {
+    "item": {
+     "id": "W1",
+     "title": "Data layer, data unit tests and import-allowlist check",
+     "description": "Create bookapi/__init__.py with a docstring and __all__. Create bookapi/data.py with BOOKS (10 records, including Jane Austen x2, George Orwell x2 and Gabriel Garc\u00eda M\u00e1rquez) and list_books, get_book and search_by_author exactly as in the design. Use typing hints or __future__ annotations so the code runs on 3.7. Create tests/__init__.py (empty). Create tests/test_data.py covering dataset shape, types and unique ids; copy semantics; hit and miss; case-insensitive partial match; and the unicode match. It also defines the constant ALLOWED_TOP_LEVEL exactly as listed in the design's IMPORT ALLOWLIST section (no sys.stdlib_module_names, no other additions). An ast-based test then walks bookapi/ and tests/ with os.walk and asserts that every absolute import's top-level name is in that set. Relative imports are allowed. Import only modules from ALLOWED_TOP_LEVEL.",
+     "files": [
+      "bookapi/__init__.py",
+      "bookapi/data.py",
+      "tests/__init__.py",
+      "tests/test_data.py"
+     ],
+     "covers": [
+      "R1",
+      "R2",
+      "R11"
+     ],
+     "depends_on": []
+    },
+    "consulted": [
+     "tests/test_data.py",
+     "bookapi/data.py",
+     "bookapi/__init__.py"
+    ],
+    "judged": 2
+   }
+  },
+  {
+   "id": "impl:W2",
+   "kind": "implement",
+   "agent": "engineer",
+   "deps": [
+    "spec",
+    "impl:W1"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "summary": "I checked my W2 work against the revised spec. Only one change was needed: the main() tests now replace `make_server` with `unittest.mock.patch(\"bookapi.server.make_server\")`, as the spec now requires, instead of swapping it by hand. The full suite passes (48 tests).\n\n**Server and entry point (unchanged):** `bookapi/server.py` and `bookapi/__main__.py` already matched the revised spec.\n- **Responses:** every response, errors included, is written by `_send_json` and `_send_error_json`. Each has `Content-Type: application/json; charset=utf-8` and a correct `Content-Length`. `send_error` is never used.\n- **Routing:**\n  - `GET /books` returns all books.\n  - `GET /books?author=` searches by author, decoding the value with `parse_qs(keep_blank_values=True)`.\n  - `GET /books/<id>` returns the book, 400 if the id isn't all digits, or 404 if it doesn't exist.\n  - Any other path returns 404, including `/books/` and `/books/1/`.\n- **Other methods:** POST, PUT, DELETE, PATCH and OPTIONS return 405 with `Allow: GET`. HEAD gets the same 405 headers but no body.\n- **Startup:** request logging is turned off. `make_server` returns a threaded server with `daemon_threads=True`. `main(argv)` takes `--host`/`--port` (default 127.0.0.1:8000), prints `Serving on http://HOST:PORT`, stops quietly on Ctrl-C, always closes the server and returns 0.\n\n**Changes in `tests/test_server.py`:**\n- The `make_server` stand-in now records its arguments and returns a fake server. The tests check it is called with `(\"127.0.0.1\", 8000)` for `main([])` and with `(\"0.0.0.0\", 9001)` for the custom arguments. Both return 0, with output captured through `redirect_stdout(io.StringIO())`.\n- A bad `--port` exits without calling `make_server`.\n- I added one test that checks the patch replaces the module-level `make_server`, which is the name `main()` uses.\n\nAll other tests are unchanged. The only new import is `unittest.mock`, which is covered by the allowlist entry `unittest`.",
+    "tests": "Command: `timeout 120 python3 -m unittest -v`\nOutcome: exit code 0, \"Ran 48 tests in 2.052s, OK\". That is 21 tests in `tests/test_data.py` and 27 in `tests/test_server.py`. The 4 `MainTests` that use `mock.patch` all passed. The allowlist import check in `test_data.py` also passed with the new `unittest.mock` import. Nothing hung and no request log lines were printed."
+   },
+   "error": null,
+   "seconds": 225.6,
+   "tokens": 162914,
+   "meta": {
+    "item": {
+     "id": "W2",
+     "title": "HTTP server, entry point and integration tests",
+     "description": "Implement bookapi/server.py: BookRequestHandler with _send_json/_send_error_json (never send_error); exact routing for /books, /books?author= (parse_qs with keep_blank_values) and /books/<id> (400 unless ^[0-9]+$, 404 if missing); 404 for other paths, including trailing slashes; 405 with Allow: GET for POST/PUT/DELETE/PATCH/OPTIONS/HEAD, with no body for HEAD; and a no-op log_message. Add make_server(host, port), returning a ThreadingHTTPServer with daemon_threads=True, and main(argv) with argparse --host/--port defaulting to 127.0.0.1:8000. Create bookapi/__main__.py. Write tests/test_server.py with a live server on port 0, started in setUpClass and stopped in tearDownClass with shutdown/server_close/join. Test all status codes; Content-Type and Content-Length on every response; the author search cases (case, miss, %20 and +, unicode); silent logging via contextlib.redirect_stderr(io.StringIO()); and main() argument handling via unittest.mock.patch of bookapi.server.make_server. HARD CONSTRAINT: every import in these three files must have its top-level name in the design's ALLOWED_TOP_LEVEL set. Use no pathlib or any other module outside it, or W1's R1 test fails.",
+     "files": [
+      "bookapi/server.py",
+      "bookapi/__main__.py",
+      "tests/test_server.py"
+     ],
+     "covers": [
+      "R1",
+      "R3",
+      "R4",
+      "R5",
+      "R6",
+      "R7",
+      "R8",
+      "R9",
+      "R10",
+      "R11"
+     ],
+     "depends_on": [
+      "W1"
+     ]
+    },
+    "consulted": [
+     "bookapi/data.py",
+     "tests/test_data.py",
+     "bookapi/server.py",
+     "tests/test_server.py",
+     "tests/test_data.py",
+     "bookapi/__main__.py"
+    ],
+    "judged": 2
+   }
+  },
+  {
+   "id": "impl:W3",
+   "kind": "implement",
+   "agent": "engineer",
+   "deps": [
+    "spec",
+    "impl:W2"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "summary": "I updated README.md (W3, covers R12) to match the revised spec. I re-read the current bookapi/server.py, data.py and __main__.py. The routes, error messages, status codes, search rules and trailing-slash behaviour the README already described still match the code, so those sections are unchanged.\n\nWhat I added for the revised spec:\n- **Requirements section:** the project deliberately has no requirements.txt or other dependency file. Every module in `bookapi/` and `tests/` may import only from the fixed list of standard-library modules in `ALLOWED_TOP_LEVEL` (in `tests/test_data.py`). A test enforces this, so new code can't use other modules such as `pathlib`.\n- **Project layout:** I added `tests/__init__.py`, the empty file that lets `python3 -m unittest` find the tests. The `tests/test_data.py` entry now says it holds the `ALLOWED_TOP_LEVEL` import check.\n\nEverything else is unchanged: Python 3.7+ with no dependencies; the run command `python3 -m bookapi [--host H] [--port P]` (default 127.0.0.1:8000); the test command `python3 -m unittest -v`; the three endpoints with curl examples and JSON shapes; the `{\"error\": ...}` error body with the exact messages; the 200/400/404/405 table, including `Allow: GET` and headers-only HEAD responses; the search rules (case-insensitive substring match, URL-decoded with `%20`, `+` and UTF-8, no trimming, an empty value returns all books, no match returns `[]`, only the first `author` value is used); and `/books/` and `/books/1/` returning 404.",
+    "tests": "I ran `python3 -m unittest -v` and then `python3 -m unittest` after editing; both exited 0 with all 48 tests passing.\n\nI also checked the README's claims against a live server (`python3 -m bookapi --port 8766`). Every response matched what the README says:\n- `/books/` and `/books/1/` returned 404 with `{\"error\": \"Not found\"}`.\n- `/books/03` returned 200 with book 3.\n- `/books/-1` returned 400 with the invalid-id message.\n- `/books?author=` returned 200 with the full list.\n- `/books?author=ORWELL` returned 200 with the Orwell books."
+   },
+   "error": null,
+   "seconds": 58.9,
+   "tokens": 90947,
+   "meta": {
+    "item": {
+     "id": "W3",
+     "title": "README",
+     "description": "Write README.md covering: requirements (Python 3.7+, no dependencies); the run command `python3 -m bookapi [--host H] [--port P]` (default 127.0.0.1:8000); the test command `python3 -m unittest -v` (python -m unittest); the three endpoints (GET /books, GET /books/<id>, GET /books?author=X) with example curl calls and JSON shapes; the error body {\"error\": ...}; status codes 200/400/404/405 and when each occurs; search semantics (case-insensitive substring on author, URL-decoded, an empty value matches all, no match returns []); and trailing-slash behaviour (/books/ and /books/1/ return 404).",
+     "files": [
+      "README.md"
+     ],
+     "covers": [
+      "R12"
+     ],
+     "depends_on": [
+      "W2"
+     ]
+    },
+    "consulted": [
+     "bookapi/server.py",
+     "bookapi/data.py",
+     "bookapi/server.py",
+     "README.md",
+     "bookapi/data.py"
+    ],
+    "judged": 2
+   }
+  },
+  {
+   "id": "audit",
+   "kind": "audit",
+   "agent": "auditor",
+   "deps": [
+    "research",
+    "plan",
+    "prd",
+    "spec",
+    "impl:W1",
+    "impl:W2",
+    "impl:W3"
+   ],
+   "status": "done",
+   "attempts": 1,
+   "runs": 2,
+   "version": 2,
+   "feedback": [],
+   "result": {
+    "passed": true,
+    "findings": []
+   },
+   "error": null,
+   "seconds": 145.5,
+   "tokens": 194186,
+   "meta": {}
+  }
+ ]
+}
