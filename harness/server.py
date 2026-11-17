@@ -35,6 +35,7 @@ PAGE = """<!doctype html>
   #board { position: sticky; top: 16px; align-self: start; font-size: 13px; }
   #board h2 { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: #aaa; }
   .card { border-left: 4px solid #555; background: #1a1a1a; border-radius: 4px; padding: 6px 10px; margin-bottom: 6px; }
+  .card { cursor: pointer; }
   .card b { font-family: ui-monospace, monospace; } .card small { display: block; color: #999; }
   .running { border-color: #58a6ff; animation: pulse 1.2s infinite; } .done { border-color: #3fb950; }
   .failed { border-color: #ff7b72; } .reopened { border-color: #d29922; } .retrying { border-color: #db6d28; }
@@ -77,7 +78,8 @@ PAGE = """<!doctype html>
       cards.replaceChildren(...report.tasks.map(t => {
         const card = document.createElement("div"), s = state(t);
         card.className = "card " + s;
-        card.title = t.error || "";
+        card.title = t.error || "click for its log trail";
+        card.onclick = () => send("/trail " + t.id);
         card.innerHTML = "<b></b> <span></span><small></small>";
         card.children[0].textContent = t.id;
         card.children[1].textContent = s;
@@ -95,10 +97,13 @@ PAGE = """<!doctype html>
   poll();
   document.getElementById("stop").onclick = () =>
     fetch("/stop", { method: "POST", headers: auth }).then(() => add("\\n(stop requested)\\n", "event"));
-  document.getElementById("form").onsubmit = async (submitted) => {
+  document.getElementById("form").onsubmit = (submitted) => {
     submitted.preventDefault();
     const message = input.value.trim(); if (!message) return;
-    input.value = ""; add("\\n> " + message + "\\n", "you");
+    input.value = ""; send(message);
+  };
+  async function send(message) {
+    add("\\n> " + message + "\\n", "you");
     const response = await fetch("/chat", { method: "POST", headers: auth, body: JSON.stringify({ message }) });
     if (!response.ok) return add(response.status + " " + await response.text() + "\\n", "error");
     const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = "";
@@ -111,7 +116,7 @@ PAGE = """<!doctype html>
         add(item.type === "text" ? item.text : "\\n" + item.text + "\\n", item.type);
       }
     }
-  };
+  }
 </script>
 """
 
