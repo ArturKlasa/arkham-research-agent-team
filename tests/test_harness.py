@@ -42,7 +42,7 @@ from harness.llm import (
     for_role,
     make_llm,
 )
-from harness.orchestrator import Orchestrator
+from harness.orchestrator import Orchestrator, new_session
 from harness.server import RETRY_DELAY, build
 from harness.memory import Memory
 from harness.rules import _buildable, _file_ownership, _files_written, _placeholders, _traceable, reaches_out
@@ -735,6 +735,12 @@ class Boundaries(HarnessCase):
         self.assertEqual([m["role"] for m in again], ["user", "assistant"])
         self.assertEqual(again[0]["content"], "How many penguins are in Madagascar?")
         self.assertTrue(again[1]["content"])
+
+    def test_sessions_started_in_the_same_second_get_their_own_directories(self):
+        runs = self.tmp / "fresh-runs"
+        with unittest.mock.patch("time.strftime", return_value="20261117-120000"):
+            ids = [new_session(runs) for _ in range(3)]
+        self.assertEqual(ids, ["20261117-120000", "20261117-120000-2", "20261117-120000-3"])
 
     def test_a_torn_line_in_memory_or_trail_does_not_stop_a_session(self):
         orch = self.team(faults=False)

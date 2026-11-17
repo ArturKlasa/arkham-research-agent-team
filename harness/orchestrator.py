@@ -55,10 +55,24 @@ HELP = """/status            task board (each task: state, runs, time, tokens) a
 /help, /quit"""
 
 
+def new_session(runs: Path) -> str:
+    """A timestamp id whose directory this call creates, so two sessions started in the same second never share one."""
+    runs.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    for n in range(1, 100):
+        session = stamp if n == 1 else f"{stamp}-{n}"
+        try:
+            (runs / session).mkdir()
+            return session
+        except FileExistsError:
+            continue
+    raise RuntimeError(f"no free session id under {runs} for {stamp}")
+
+
 class Orchestrator:
     def __init__(self, cfg, session: str | None = None, llm=None):
         self.cfg = cfg
-        self.session = session or time.strftime("%Y%m%d-%H%M%S")
+        self.session = session or new_session(Path(cfg.runs))
         self.llm = llm or make_llm(cfg)
         self.engine = Engine(cfg, self.llm, Path(cfg.runs) / self.session)
         # The chat is kept on disk as what was said, one turn per line, so a reopened session continues the

@@ -35,7 +35,7 @@ Then type what you want built. Other entry points and options:
 .venv/bin/python -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
 .venv/bin/python -m harness --hooks examples/hooks.py     # load policy hooks
 .venv/bin/python -m harness --pause-after prd             # stop after the PRD for your review; `resume` (or a change request) continues
-.venv/bin/python -m unittest discover -s tests -v         # 82 tests, offline, about 14 seconds
+.venv/bin/python -m unittest discover -s tests -v         # 83 tests, offline, about 14 seconds
 ```
 
 Requirements: Linux or macOS (the memory file is locked with `fcntl`, so Windows needs WSL), Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Node is needed only for `--provider pi`) (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
