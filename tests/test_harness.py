@@ -746,6 +746,16 @@ class Boundaries(HarnessCase):
             ids = [new_session(runs) for _ in range(3)]
         self.assertEqual(ids, ["20261117-120000", "20261117-120000-2", "20261117-120000-3"])
 
+    def test_reopening_a_session_that_does_not_exist_is_refused(self):
+        runs = self.tmp / "fresh-runs"
+        done = subprocess.run(
+            [sys.executable, "-m", "harness", "--provider", "scripted", "--session", "20261117-12000"],
+            env={**os.environ, "HARNESS_RUNS": str(runs)}, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("no session 20261117-12000", done.stderr)
+        self.assertFalse((runs / "20261117-12000").exists())
+
     def test_a_torn_line_in_memory_or_trail_does_not_stop_a_session(self):
         orch = self.team(faults=False)
         orch.engine.memory.lesson("product", "PRD-IDS", "ids are unique", "s0")

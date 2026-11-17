@@ -76,7 +76,10 @@ def main() -> None:
         for k, v in vars(args).items()
         if v is not None and k in ("provider", "model", "roles", "base_url", "sandbox", "sources", "pause_after")
     }
-    orchestrator = Orchestrator(Config.load(**chosen), args.session)
+    cfg = Config.load(**chosen)
+    if args.session and not (Path(cfg.runs) / args.session).is_dir():  # a mistyped id must not start an empty one
+        parser.error(f"no session {args.session} under {cfg.runs}")
+    orchestrator = Orchestrator(cfg, args.session)
     if args.hooks:
         load_hooks(args.hooks, orchestrator.engine.bus)
 
