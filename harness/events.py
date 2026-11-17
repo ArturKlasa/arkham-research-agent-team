@@ -100,6 +100,20 @@ def render(e: dict) -> str | None:
         return f"↺ re-running {', '.join(e['tasks'])} (audit cycle {e['cycle']})"
     if kind == "lesson":
         return f"    ✎ lesson recorded for {e['role']}: [{e['rule']}]"
+    if kind == "run_done":
+        return summary_text(e)
     if kind == "interrupted":
         return f"⏸ {task} interrupted — state saved"
     return None
+
+
+def summary_text(s: dict) -> str:
+    """The end-of-run block: what the session cost and how often each recovery path fired."""
+    calls = sum(r["calls"] for r in s["roles"].values())
+    lines = [f"■ run {s['status']} · {s['seconds']}s of task time · {calls} model calls · tests: {s['tests'] or 'not run'}"]
+    lines += [f"    {role:<12} {r['calls']:>3} calls  {r['in']:>9,} in  {r['out']:>8,} out" for role, r in s["roles"].items()]
+    lines.append(
+        f"    recoveries: {s['gate_rejections']} gate rejections · {s['tool_errors']} tool errors · {s['task_retries']} task retries · "
+        f"{s['model_retries']} model-call retries · {s['audit_cycles']} audit cycles · {s['lessons']} lessons recorded"
+    )
+    return "\n".join(lines)

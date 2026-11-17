@@ -66,6 +66,8 @@ class Engine:
         """Drive the board until nothing is runnable. Also how an interrupted session resumes."""
         while task := self.board.ready():
             self.execute(task)
+        if self.board.pipeline():
+            self.bus.emit("run_done", **self.summary())
         return self.report()
 
     def resume(self) -> dict:
@@ -264,6 +266,28 @@ class Engine:
             task.tokens += event["usage"]["in"] + event["usage"]["out"]
 
     # --- what the user sees ---------------------------------------------------------------------
+
+    def summary(self) -> dict:
+        """Numbers for the whole session, counted from the trail and the board."""
+        trail, roles = self.bus.read(), {}
+        for e in trail:
+            if e["type"] == "llm":
+                calls, tin, tout = roles.get(e.get("agent", "?"), (0, 0, 0))
+                roles[e.get("agent", "?")] = (calls + 1, tin + e["usage"]["in"], tout + e["usage"]["out"])
+        count = lambda test: sum(1 for e in trail if test(e))  # noqa: E731
+        suites = [e for e in trail if e["type"] == "suite"]
+        return {
+            "status": self.report()["status"],
+            "seconds": round(sum(t.seconds for t in self.board.tasks.values()), 1),
+            "roles": {role: {"calls": c, "in": i, "out": o} for role, (c, i, o) in sorted(roles.items(), key=lambda r: -r[1][0])},
+            "task_retries": count(lambda e: e["type"] == "error" and e["where"] == "task" and e.get("will_retry")),
+            "model_retries": count(lambda e: e["type"] == "llm_retry"),
+            "tool_errors": count(lambda e: e["type"] == "error" and e["where"].startswith("tool:")),
+            "gate_rejections": count(lambda e: e["type"] == "gate" and not e["passed"]),
+            "audit_cycles": self.board.meta.get("audit_cycles", 0),
+            "lessons": count(lambda e: e["type"] == "lesson"),
+            "tests": None if not suites else ("pass" if suites[-1]["exit_code"] == 0 else f"fail (exit {suites[-1]['exit_code']})"),
+        }
 
     def report(self) -> dict:
         tasks = list(self.board.tasks.values())  # a copy: the web gateway reads this while a run adds tasks

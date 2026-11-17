@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .agent import Tool, run_agent
 from .engine import Engine
+from .events import summary_text
 from .experts import TEXT, obj
 from .llm import for_role, make_llm
 
@@ -34,7 +35,7 @@ Choosing a tool:
 
 After a tool returns, report briefly and truthfully: what was built and where, what the audit found, what failed and why. Never claim more than the report shows. Then invite the user to inspect files or ask for changes."""
 
-HELP = """/status            task board: every task, its state, runs, time, tokens
+HELP = """/status            task board (each task: state, runs, time, tokens) and the session summary
 /show [name]       list artifacts and files, or print one (e.g. /show artifacts/prd, /show api.py)
 /trail [filter]    the log trail, optionally for one agent or task (e.g. /trail engineer, /trail impl:W1)
 /errors            every recorded error with its traceback
@@ -85,7 +86,7 @@ class Orchestrator:
         if name == "/status":
             report = e.report()
             rows = [f"{t['id']:<12} {t['agent']:<11} {t['status']:<8} runs={t['runs']} {t['seconds']:>7}s {t['tokens']:>8} tok  {t.get('error', '')}" for t in report["tasks"]]
-            return "\n".join([f"session {self.session}: {report['status']} (audit cycles used: {report['audit_cycles_used']})", *rows])
+            return "\n".join([f"session {self.session}: {report['status']} (audit cycles used: {report['audit_cycles_used']})", *rows, "", summary_text(e.summary())])
         if name == "/show":
             return e.show(arg.strip())
         if name == "/trail":

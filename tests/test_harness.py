@@ -64,6 +64,15 @@ class Pipeline(HarnessCase):
         self.assertEqual(self.events(orch, type="error"), [])
         self.assertIn("R2", orch.engine.show("artifacts/prd"))
 
+    def test_the_run_ends_with_a_summary_of_what_each_recovery_path_did(self):
+        orch = self.team()
+        orch.engine.start(TASK)
+        summary = self.events(orch, type="run_done")[-1]
+        counts = {k: summary[k] for k in ("gate_rejections", "task_retries", "model_retries", "audit_cycles", "lessons", "tests", "status")}
+        self.assertEqual(counts, {"gate_rejections": 2, "task_retries": 1, "model_retries": 1, "audit_cycles": 2, "lessons": 4, "tests": "pass", "status": "completed"})
+        self.assertEqual(sum(r["calls"] for r in summary["roles"].values()), len(self.events(orch, type="llm")))
+        self.assertIn("2 gate rejections", orch.command("/status"))
+
     def test_every_failure_is_recovered_at_the_cheapest_level(self):
         orch = self.team()
         report = orch.engine.start(TASK)
