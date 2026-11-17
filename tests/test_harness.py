@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -29,7 +30,7 @@ from harness.orchestrator import Orchestrator
 from harness.server import build
 from harness.memory import Memory
 from harness.rules import _buildable, _file_ownership, _files_written, _placeholders, _traceable, reaches_out
-from harness.tools import Workspace, _CheckedRedirects, check_public, detect_sandbox, _restore, _snapshot, make_tools, run_sandboxed
+from harness.tools import Workspace, _CheckedRedirects, check_public, detect_sandbox, html_to_text, _restore, _snapshot, make_tools, run_sandboxed, search_web
 
 try:
     SANDBOX = detect_sandbox()
@@ -605,6 +606,64 @@ class Boundaries(HarnessCase):
         board.save()
         plan = Board(self.tmp / "board.json").tasks["plan"]
         self.assertEqual((plan.status, plan.attempts), ("pending", 0))
+
+    def test_search_reports_matching_lines_and_counts_the_file_as_read(self):
+        ws, consulted = Workspace(self.tmp / "ws", self.tmp / "refs"), []
+        (self.tmp / "refs").mkdir()
+        (self.tmp / "refs" / "api.md").write_text("intro\nGET /users/<id> returns one user\n")
+        (ws.root / "notes.txt").write_text("nothing here\n")
+        search = make_tools(ws, Config(sandbox=SANDBOX), consulted)["search_files"].fn
+        self.assertEqual(search({"pattern": r"GET /\w+"}), "sources/api.md:2: GET /users/<id> returns one user")
+        self.assertEqual(consulted, ["sources/api.md"])  # a grounded finding may cite it
+        self.assertEqual(search({"pattern": "absent"}), "(no matches)")
+        self.assertRaises(PermissionError, search, {"pattern": "x", "path": "../.."})
+
+    def test_a_fetched_page_is_reduced_to_its_visible_text_and_search_results_to_their_targets(self):
+        page = "<html><head><style>p {color: red}</style><script>track('x')</script></head><body><h1>Title</h1><p>Fish &amp; chips</p></body></html>"
+        self.assertEqual(html_to_text(page), "Title\nFish & chips")
+        results = (
+            '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.python.org%2F3%2F&amp;rut=1">The <b>Python</b> docs</a>'
+            '<a class="result__snippet" href="#">Official &amp; <b>complete</b></a>'
+            '<a class="result__a" href="https://example.org/plain">Plain link</a>'
+        )
+        with unittest.mock.patch("harness.tools.http_get", return_value=results):
+            found = search_web("python docs")
+        self.assertEqual(found[0], {"title": "The Python docs", "url": "https://docs.python.org/3/", "snippet": "Official & complete"})
+        self.assertEqual(found[1], {"title": "Plain link", "url": "https://example.org/plain", "snippet": ""})
+
+    def test_a_docker_sandbox_gets_no_network_and_a_command_that_never_ends_is_stopped(self):
+        cfg = Config(sandbox="docker", command_timeout=7)
+        done = subprocess.CompletedProcess([], 0, stdout="ok\n", stderr="")
+        with unittest.mock.patch("harness.tools.subprocess.run", return_value=done) as run:
+            self.assertEqual(run_sandboxed(cfg, self.tmp, "echo ok"), (0, "ok"))
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--network") + 1], "none")
+        self.assertIn(f"{self.tmp}:/work", argv)  # the workspace is the only host path mounted
+        self.assertEqual([a for a in argv if a == "-v"], ["-v"])
+        self.assertEqual(argv[-5:], ["timeout", "7", "sh", "-c", "echo ok"])
+        with unittest.mock.patch("harness.tools.subprocess.run", side_effect=subprocess.TimeoutExpired("docker", 22)):
+            self.assertEqual(run_sandboxed(cfg, self.tmp, "sleep 999"), (124, "timed out after 7s"))
+        self.assertRaises(ValueError, run_sandboxed, Config(sandbox="chroot"), self.tmp, "true")
+
+    def test_slash_commands_show_the_board_the_trail_the_files_and_the_memory_without_the_model(self):
+        orch = self.team()
+        orch.engine.start(TASK)
+        calls = len(self.events(orch, type="llm"))
+        status = orch.command("/status")
+        self.assertIn("session s1: completed (audit re-runs since the last change: 2 of 2)", status)
+        self.assertRegex(status, r"impl:W2\s+engineer\s+done\s+runs=3")
+        trail = orch.command("/trail engineer").splitlines()
+        self.assertTrue(trail and all(" engineer " in line for line in trail))
+        self.assertTrue(all(" impl:W1 " in line for line in orch.command("/trail impl:W1").splitlines()))
+        self.assertEqual(orch.command("/trail nobody"), "(no events)")
+        listing = orch.command("/show").splitlines()
+        self.assertTrue({"artifacts/prd", "artifacts/audit", "api.py"} <= set(listing))
+        self.assertIn("## requirements", orch.command("/show artifacts/prd"))
+        self.assertIn("def ", orch.command("/show api.py"))
+        self.assertRaises(PermissionError, orch.command, "/show artifacts/../../board")
+        self.assertRegex(orch.command("/memory"), r"lesson\s+engineer\s+x\d+ IMPL-TESTS")
+        self.assertIn("/errors", orch.command("/nonsense"))
+        self.assertEqual(len(self.events(orch, type="llm")), calls)  # none of it asked the model
 
     def test_sessions_writing_memory_at_the_same_time_lose_nothing(self):
         def write(session):
