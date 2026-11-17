@@ -169,6 +169,12 @@ class Pipeline(HarnessCase):
         self.assertEqual(orch.engine.report()["status"], "completed")
         self.assertRaises(ValueError, orch.engine.change, "nonsense", "x")
 
+    def test_a_change_request_resets_the_rerun_budget_but_not_the_session_summary(self):
+        orch = self.team()
+        orch.engine.start(TASK)
+        orch.send("change impl:W2 return the id in the 404 body", lambda text: None)
+        self.assertEqual((orch.engine.report()["audit_cycles_used"], orch.engine.summary()["audit_cycles"]), (0, 2))
+
     def test_a_change_request_stays_in_force_for_later_reruns_and_reaches_the_auditor(self):
         briefs = []
 

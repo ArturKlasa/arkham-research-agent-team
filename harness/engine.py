@@ -298,7 +298,7 @@ class Engine:
             "model_retries": count(lambda e: e["type"] == "llm_retry"),
             "tool_errors": count(lambda e: e["type"] == "error" and e["where"].startswith("tool:")),
             "gate_rejections": count(lambda e: e["type"] == "gate" and not e["passed"]),
-            "audit_cycles": self.board.meta.get("audit_cycles", 0),
+            "audit_cycles": count(lambda e: e["type"] == "rerun"),
             "lessons": count(lambda e: e["type"] == "lesson"),
             "lessons_recalled": sum(len(e["rules"]) for e in trail if e["type"] == "recall"),
             "tests": self._tests(),

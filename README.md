@@ -2,7 +2,7 @@
 
 A multi-agent harness that takes a medium-size task ("build an API for consulting a mock database", "build an MCP server for an Obsidian vault") through **Research → Planning → PRD → Spec → Implementation → Audit** and leaves a working, tested minimum viable solution in a workspace.
 
-The orchestration is written from scratch in about 2,500 lines of Python: delegation, task tracking, validation, auditing, re-running, memory, hooks and sandboxing. The only thing left to a library is the connection to the model (the Anthropic SDK for Claude; plain `urllib` for any OpenAI-compatible server such as Ollama).
+The orchestration is written from scratch in about 2,600 lines of Python: delegation, task tracking, validation, auditing, re-running, memory, hooks and sandboxing. The only thing left to a library is the connection to the model (the Anthropic SDK for Claude; plain `urllib` for any OpenAI-compatible server such as Ollama).
 
 ## Quick start
 
@@ -29,7 +29,7 @@ Then type what you want built. Other entry points and options:
 .venv/bin/python -m harness --sources ./docs              # give the agents reference files to research
 .venv/bin/python -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
 .venv/bin/python -m harness --hooks examples/hooks.py     # load policy hooks
-.venv/bin/python -m unittest discover -s tests -v         # 65 tests, offline, about 9 seconds
+.venv/bin/python -m unittest discover -s tests -v         # 66 tests, offline, about 9 seconds
 ```
 
 Requirements: Linux or macOS (the memory file is locked with `fcntl`, so Windows needs WSL), Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
