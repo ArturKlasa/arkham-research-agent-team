@@ -292,6 +292,18 @@ class Pipeline(HarnessCase):
         self.assertEqual(orch.engine.resume()["status"], "completed")
         self.assertTrue(orch.engine.approve()["accepted_by_user"])
 
+    def test_the_run_can_stop_after_a_step_for_the_users_review(self):
+        engine = self.team(faults=False, pause_after="prd").engine
+        report = engine.start(TASK)
+        self.assertEqual(report["status"], "paused after prd for review (resume continues)")
+        self.assertEqual([t["status"] for t in report["tasks"]], ["done", "done", "done", "pending", "pending"])
+        self.assertRaises(ValueError, engine.approve)
+
+        self.assertIn("paused after prd", engine.change("prd", "also list every user")["status"])  # the revised PRD is reviewed too
+        self.assertEqual((engine.board.tasks["prd"].runs, engine.board.tasks["spec"].runs), (2, 0))
+        self.assertEqual(engine.resume()["status"], "completed")
+        self.assertEqual(engine.board.tasks["prd"].runs, 2)
+
     def test_interrupted_run_resumes_without_redoing_finished_work(self):
         class Interrupted(ScriptedTeam):
             def architect(self, messages, tools):

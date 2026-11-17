@@ -65,8 +65,13 @@ class Engine:
 
     def run(self) -> dict:
         """Drive the board until nothing is runnable. Also how an interrupted session resumes."""
+        self.board.meta.pop("paused_after", None)
         while task := self.board.ready():
             self.execute(task)
+            if task.status == "done" and task.id in self.cfg.pause_after.split(","):  # the user reviews before the costlier steps
+                self.board.meta["paused_after"] = task.id
+                self.board.save()
+                break
         if self.board.pipeline():
             self.bus.emit("run_done", **self.summary())
         return self.report()
@@ -313,7 +318,8 @@ class Engine:
         elif any(t.status == "failed" for t in steps):
             status = "failed"
         elif any(t.status != "done" for t in steps):
-            status = "incomplete"
+            paused = self.board.meta.get("paused_after")
+            status = f"paused after {paused} for review (resume continues)" if paused else "incomplete"
         else:
             status = "completed" if audit.result["passed"] else "completed_with_open_findings"
         return {

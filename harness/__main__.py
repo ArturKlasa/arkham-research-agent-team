@@ -49,12 +49,13 @@ def main() -> None:
     parser.add_argument("--sources", type=Path, help="directory of reference files the agents may read")
     parser.add_argument("--session", help="resume an existing session id (a directory under runs/)")
     parser.add_argument("--hooks", help="python file defining register(bus)")
+    parser.add_argument("--pause-after", help="stop after this step for review, e.g. prd; `resume` continues")
     parser.add_argument("--serve", action="store_true", help="serve the web UI / HTTP gateway instead of the terminal chat")
     parser.add_argument("--host", default="127.0.0.1", help="bind address for --serve; 0.0.0.0 allows remote access")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
-    chosen = {k: v for k, v in vars(args).items() if v is not None and k in ("provider", "model", "roles", "base_url", "sandbox", "sources")}
+    chosen = {k: v for k, v in vars(args).items() if v is not None and k in ("provider", "model", "roles", "base_url", "sandbox", "sources", "pause_after")}
     orchestrator = Orchestrator(Config.load(**chosen), args.session)
     if args.hooks:
         load_hooks(args.hooks, orchestrator.engine.bus)
