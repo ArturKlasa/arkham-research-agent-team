@@ -233,15 +233,16 @@ class ScriptedTeam:
         return Reply(tool_calls=calls, stop="tool_use")
 
     def auditor(self, messages, tools) -> Reply:
-        rules = tools["submit"].schema["properties"]["verdicts"]["items"]["properties"]["rule"]["enum"]
+        verdict = tools["submit"].schema["properties"]["verdicts"]["items"]["properties"]
+        rules, step = verdict["rule"]["enum"], verdict["blame"]["enum"][0]
         results = self.results(messages)
         if "impl:W2" in messages[0]["content"] and not results:
             return self.call("read_file", path="api.py")
         missing_404 = bool(results) and "404" not in results[0]
         verdicts = [
-            {"rule": r, "passed": False, "evidence": "api.py lookup() returns 200 with a null body for an unknown id; R2 requires 404.", "fix": "Return 404 when the user is not found, and test it."}
+            {"rule": r, "passed": False, "evidence": "api.py lookup() returns 200 with a null body for an unknown id; R2 requires 404.", "fix": "Return 404 when the user is not found, and test it.", "blame": step}
             if r == "IMPL-SPEC" and missing_404
-            else {"rule": r, "passed": True, "evidence": "Checked against the upstream result.", "fix": ""}
+            else {"rule": r, "passed": True, "evidence": "Checked against the upstream result.", "fix": "", "blame": step}
             for r in rules
         ]
         return self.call("submit", verdicts=verdicts)

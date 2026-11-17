@@ -112,6 +112,24 @@ class Pipeline(HarnessCase):
         # sweep 1 stops at the failing suite (0 judgements), sweep 2 judges all 6 steps, sweep 3 only the redone W2
         self.assertEqual(len(verdicts), 6 + 1)
 
+    def test_the_auditor_can_blame_the_upstream_step_a_defect_came_from(self):
+        class SpecBlamer(ScriptedTeam):
+            def auditor(self, messages, tools):
+                reply = super().auditor(messages, tools)
+                call = reply.tool_calls[0]
+                if call.name == "submit" and "impl:W2" in messages[0]["content"] and not self.blamed:
+                    self.blamed = True
+                    call.args["verdicts"][0].update(passed=False, evidence="the spec's interface makes R2 impossible", fix="change the spec", blame="spec")
+                return reply
+
+        team = SpecBlamer(faults=False)
+        team.blamed = False
+        orch = self.team(llm=team)
+        orch.engine.start(TASK)
+        runs = {t.id: t.runs for t in orch.engine.board.tasks.values()}
+        self.assertEqual(runs, {"research": 1, "plan": 1, "prd": 1, "spec": 2, "impl:W1": 2, "impl:W2": 2, "audit": 2})
+        self.assertEqual([e["tasks"] for e in self.events(orch, type="rerun")], [["spec"]])
+
     def test_open_findings_are_reported_when_the_rerun_budget_runs_out(self):
         orch = self.team(max_audit_cycles=1)
         report = orch.engine.start(TASK)

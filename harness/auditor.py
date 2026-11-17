@@ -40,10 +40,10 @@ def sweep(eng) -> list[dict]:
         if task.id in stale or task.meta.get("judged") == task.version:  # unchanged since it last passed
             continue
         failed = [v for v in judge(eng, task) if not v["passed"]]
-        findings += [_finding(v["rule"], task.id, v["evidence"], v["fix"]) for v in failed]
-        if failed:
-            stale |= eng.board.dependents(task.id)
-        else:
+        findings += [_finding(v["rule"], v["blame"], v["evidence"], v["fix"]) for v in failed]
+        for v in failed:
+            stale |= eng.board.dependents(v["blame"])
+        if not failed:
             task.meta["judged"] = task.version
             eng.board.save()  # keep progress: a crash mid-sweep does not re-judge passed tasks
     return findings
@@ -92,12 +92,14 @@ def judge(eng, task) -> list[dict]:
             f"# Output under audit\n{json.dumps(task.result, indent=1)}",
             _outward(eng, task),
             "# Rules to judge\n" + "\n".join(f"- {r.id}: {r.text}" for r in rules),
-            "Submit exactly one verdict per rule. For a failed rule, `evidence` quotes the defect and `fix` says what to change.",
+            "Submit exactly one verdict per rule. For a failed rule, `evidence` quotes the defect and `fix` says what to change. "
+            f"`blame` is the step whose output must change: {task.id} itself, or the upstream step ({', '.join(upstream) or 'none'}) whose mistake it inherited.",
         ]
         if part
     )
     ids = [r.id for r in rules]
-    schema = obj(verdicts=arr(obj(rule={"type": "string", "enum": ids}, passed={"type": "boolean"}, evidence=TEXT, fix={"type": "string"}), 1))
+    blame = {"type": "string", "enum": [task.id, *upstream]}  # a defect inherited from upstream is fixed there, not by re-running this step
+    schema = obj(verdicts=arr(obj(rule={"type": "string", "enum": ids}, passed={"type": "boolean"}, evidence=TEXT, fix={"type": "string"}, blame=blame), 1))
 
     def complete(payload):  # the auditor is validated too: no rule skipped, none judged twice
         got = sorted(v["rule"] for v in payload["verdicts"])
