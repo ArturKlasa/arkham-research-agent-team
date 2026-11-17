@@ -46,11 +46,16 @@ class Board:
             self.tasks = {t["id"]: Task(**t) for t in saved["tasks"]}
             for task in self.tasks.values():  # a task still `running` means the process died mid-task
                 if task.status == "running":  # the attempt never finished, so it does not count against the budget
-                    task.status, task.attempts = ("failed" if task.kind == "adhoc" else "pending"), max(task.attempts - 1, 0)
+                    task.status, task.attempts = (
+                        ("failed" if task.kind == "adhoc" else "pending"),
+                        max(task.attempts - 1, 0),
+                    )
 
     def save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"meta": self.meta, "tasks": [asdict(t) for t in self.tasks.values()]}, indent=1, default=str))
+        tmp.write_text(
+            json.dumps({"meta": self.meta, "tasks": [asdict(t) for t in self.tasks.values()]}, indent=1, default=str)
+        )
         os.replace(tmp, self.path)  # atomic: a crash never leaves a half-written board
 
     def add(self, task: Task) -> Task:
@@ -67,7 +72,11 @@ class Board:
     def ready(self) -> Task | None:
         """The next task to run: pending, with every dependency done."""
         for task in self.tasks.values():
-            if task.status == "pending" and task.kind != "adhoc" and all(self.tasks[d].status == "done" for d in task.deps):
+            if (
+                task.status == "pending"
+                and task.kind != "adhoc"
+                and all(self.tasks[d].status == "done" for d in task.deps)
+            ):
                 return task
         return None
 

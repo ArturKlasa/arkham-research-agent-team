@@ -10,8 +10,10 @@ from pathlib import Path
 @dataclass
 class Config:
     # LLM servicing
-    provider: str = "anthropic"  # anthropic | openai (any OpenAI-compatible server, e.g. Ollama) | pi (pi-ai, needs Node) | scripted
-    model: str = ""  # one model for every role; anthropic and pi default to llm.CLAUDE_ROLES; required for provider=openai
+    # anthropic | openai (any OpenAI-compatible server, e.g. Ollama) | pi (pi-ai, needs Node) | scripted
+    provider: str = "anthropic"
+    # one model for every role; anthropic and pi default to llm.CLAUDE_ROLES; required for provider=openai
+    model: str = ""
     effort: str = "medium"  # anthropic only: low | medium | high | xhigh | max
     base_url: str = "http://localhost:11434/v1"  # provider=openai; the default is a local Ollama
     roles: str = ""  # per-role models, "architect=claude-opus-5-5@high,auditor=..."; see llm.CLAUDE_ROLES
@@ -23,13 +25,15 @@ class Config:
     max_audit_cycles: int = 2  # audit -> re-run rounds before reporting open findings
     llm_retries: int = 3  # retries of one LLM call on a transient error
     retry_base: float = 1.0  # seconds; backoff is retry_base * 2**n plus jitter
-    max_tokens: int = 5_000_000  # tokens the tasks of one session may spend, 0 for no cap (a full Claude build used about 0.9M)
+    # tokens the tasks of one session may spend, 0 for no cap (a full Claude build used about 0.9M)
+    max_tokens: int = 5_000_000
     pause_after: str = ""  # step ids, e.g. "prd": the run stops there for the user's review and `resume` continues
 
     # Isolation
     sandbox: str = "auto"  # auto | bwrap | docker | none (unsafe: runs generated code on the host)
     docker_image: str = "python:3.12-slim"
-    docker_runtime: str = ""  # an OCI runtime for stronger isolation, when installed: runsc (gVisor) or kata-runtime (microVM)
+    # an OCI runtime for stronger isolation, when installed: runsc (gVisor) or kata-runtime (microVM)
+    docker_runtime: str = ""
     command_timeout: int = 120  # seconds per sandboxed command
 
     # Storage

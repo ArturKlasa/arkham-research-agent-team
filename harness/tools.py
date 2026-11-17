@@ -67,7 +67,9 @@ class Workspace:
         return names
 
 
-def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None, fetchable: set | None = None) -> dict[str, Tool]:
+def make_tools(
+    ws: Workspace, cfg, consulted: list, writable: set | None = None, fetchable: set | None = None
+) -> dict[str, Tool]:
     """Build the tool set for one agent run.
 
     `consulted` collects every file and URL the agent actually opened, so a rule can later check
@@ -83,12 +85,21 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None,
         target = ws.resolve(a["path"])
         consulted.append(ws.name(target))
         # A line longer than a page (minified JSON) is cut into page-sized pieces, so every file can be read to its end.
-        lines = [line[i : i + PAGE] for line in target.read_text(errors="replace").splitlines(keepends=True) for i in range(0, len(line), PAGE)]
+        lines = [
+            line[i : i + PAGE]
+            for line in target.read_text(errors="replace").splitlines(keepends=True)
+            for i in range(0, len(line), PAGE)
+        ]
         first = max(a.get("offset", 1), 1) - 1
         size, last = 0, first
-        while last < len(lines) and (last == first or size + len(lines[last]) <= PAGE):  # at least one line, then up to a page
+        # at least one line, then up to a page
+        while last < len(lines) and (last == first or size + len(lines[last]) <= PAGE):
             size, last = size + len(lines[last]), last + 1
-        more = f"\n… [lines {first + 1}-{last} of {len(lines)}; call again with offset={last + 1} for the rest]" if last < len(lines) else ""
+        more = (
+            f"\n… [lines {first + 1}-{last} of {len(lines)}; call again with offset={last + 1} for the rest]"
+            if last < len(lines)
+            else ""
+        )
         return "".join(lines[first:last]) + more or "(empty)"
 
     def search_files(a):
@@ -116,7 +127,12 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None,
             code, output = run_sandboxed(cfg, ws.root, a["command"])
         finally:
             undone = _restore(ws.root, writable, before) if before is not None else []
-        note = f"\nnote: files a command creates or changes outside your work item do not persist; undone: {', '.join(undone[:20])}" if undone else ""
+        note = (
+            "\nnote: files a command creates or changes outside your work item do "
+            f"not persist; undone: {', '.join(undone[:20])}"
+            if undone
+            else ""
+        )
         return f"exit code {code}\n{output}{note}"
 
     def web_search(a):
@@ -131,19 +147,57 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None,
         # fetch at a time. ponytail: pages an attacker gets indexed can still form such a list through search, and the
         # query itself goes to the search engine; an egress proxy with a per-task host allow-list closes both.
         if a["url"].split("#")[0] not in fetchable:
-            raise PermissionError(f"{a['url']} did not come from the user or a search result; search for the page, or ask the user to paste its URL")
+            raise PermissionError(
+                f"{a['url']} did not come from the user or a search result; "
+                "search for the page, or ask the user to paste its URL"
+            )
         page = http_get(a["url"])
         consulted.append(a["url"])
         return clip(html_to_text(page) if "<html" in page[:2000].lower() or "<!doctype" in page[:200].lower() else page)
 
     path = {"type": "string", "description": "Relative path. Reference files, if any, are under sources/."}
     tools = [
-        Tool("list_files", "List files under a directory of the workspace (default: everything).", _obj(path=path, _optional=["path"]), list_files),
-        Tool("read_file", "Read a text file from the workspace or sources/. A long file comes in pages; pass `offset` to continue.", _obj(path=path, offset={"type": "integer", "description": "First line to return (default 1)."}, _optional=["offset"]), read_file),
-        Tool("search_files", "Search files with a regular expression. Returns matching lines.", _obj(pattern={"type": "string"}, path=path, _optional=["path"]), search_files),
-        Tool("write_file", "Create or overwrite a file in the workspace with the complete content.", _obj(path=path, content={"type": "string"}), write_file),
-        Tool("run_command", "Run a shell command in the workspace inside an offline sandbox (Python standard library only). Returns the exit code and output.", _obj(command={"type": "string"}), run_command),
-        Tool("web_search", "Search the web. Returns titles, URLs and snippets. Fetch a page before citing it.", _obj(query={"type": "string"}), web_search),
+        Tool(
+            "list_files",
+            "List files under a directory of the workspace (default: everything).",
+            _obj(path=path, _optional=["path"]),
+            list_files,
+        ),
+        Tool(
+            "read_file",
+            "Read a text file from the workspace or sources/. A long file comes in pages; pass `offset` to continue.",
+            _obj(
+                path=path,
+                offset={"type": "integer", "description": "First line to return (default 1)."},
+                _optional=["offset"],
+            ),
+            read_file,
+        ),
+        Tool(
+            "search_files",
+            "Search files with a regular expression. Returns matching lines.",
+            _obj(pattern={"type": "string"}, path=path, _optional=["path"]),
+            search_files,
+        ),
+        Tool(
+            "write_file",
+            "Create or overwrite a file in the workspace with the complete content.",
+            _obj(path=path, content={"type": "string"}),
+            write_file,
+        ),
+        Tool(
+            "run_command",
+            "Run a shell command in the workspace inside an offline sandbox (Python standard library only). "
+            "Returns the exit code and output.",
+            _obj(command={"type": "string"}),
+            run_command,
+        ),
+        Tool(
+            "web_search",
+            "Search the web. Returns titles, URLs and snippets. Fetch a page before citing it.",
+            _obj(query={"type": "string"}),
+            web_search,
+        ),
         Tool("web_fetch", "Fetch a public web page and return its text.", _obj(url={"type": "string"}), web_fetch),
     ]
     return {t.name: t for t in tools}
@@ -155,7 +209,8 @@ def _obj(_optional=(), **properties) -> dict:
 
 def _snapshot(root: Path, own: set) -> dict:
     """Content of every file outside `own`, by workspace path. A symlink is recorded as its target, never followed."""
-    # held in memory per command, contents only (not modes): fine for generated projects; an overlay mount scales further
+    # held in memory per command, contents only (not modes): fine for generated projects; an overlay mount scales
+    # further
     found = {}
     for folder, dirs, names in os.walk(root):  # walk lists a symlink to a directory with the directories, unfollowed
         for name in names + [d for d in dirs if os.path.islink(os.path.join(folder, d))]:
@@ -171,8 +226,10 @@ def _restore(root: Path, own: set, before: dict) -> list[str]:
     after = _snapshot(root, own)
     changed = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
     real = root.resolve()
-    inside = lambda name: Path(os.path.realpath((root / name).parent)) == real / Path(name).parent  # no symlink on the way
-    for name in changed:  # parents first: removing a directory or symlink that took a file's place takes its children too
+    # no symlink on the way
+    inside = lambda name: Path(os.path.realpath((root / name).parent)) == real / Path(name).parent
+    # parents first: removing a directory or symlink that took a file's place takes its children too
+    for name in changed:
         path = root / name
         if inside(name):
             with contextlib.suppress(FileNotFoundError, NotADirectoryError):
@@ -180,7 +237,10 @@ def _restore(root: Path, own: set, before: dict) -> list[str]:
     for name in changed:
         if name in before and inside(name):
             (root / name).parent.mkdir(parents=True, exist_ok=True)
-            (root / name).write_bytes(before[name]) if isinstance(before[name], bytes) else os.symlink(before[name], root / name)
+            if isinstance(before[name], bytes):
+                (root / name).write_bytes(before[name])
+            else:
+                os.symlink(before[name], root / name)
     return changed
 
 
@@ -195,22 +255,42 @@ def run_sandboxed(cfg, workspace: Path, command: str) -> tuple[int, str]:
         argv = list(_cgroup_limits()) + _bwrap(workspace) + ["sh", "-c", command]
     elif mode == "docker":
         user = f"{os.getuid()}:{os.getgid()}"
-        argv = ["docker", "run", "--rm", "--network", "none", "--memory", "1g", "--cpus", "2", "--pids-limit", str(MAX_PROCESSES)]
-        # no capabilities, no privilege gain through setuid binaries, and nothing writable but the workspace and a scratch /tmp
-        argv += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp", "--user", user, "-e", "HOME=/tmp"]
-        argv += ["--runtime", cfg.docker_runtime] if cfg.docker_runtime else []  # runsc (gVisor) or kata-runtime (a microVM per command)
+        argv = [
+            "docker", "run", "--rm", "--network", "none", "--memory", "1g", "--cpus", "2", "--pids-limit",
+            str(MAX_PROCESSES),
+        ]
+        # no capabilities, no privilege gain through setuid binaries, and nothing writable but the workspace and a
+        # scratch /tmp
+        argv += [
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp", "--user",
+            user, "-e", "HOME=/tmp",
+        ]
+        # runsc (gVisor) or kata-runtime (a microVM per command)
+        argv += ["--runtime", cfg.docker_runtime] if cfg.docker_runtime else []
         argv += ["-e", "PYTHONDONTWRITEBYTECODE=1", "-v", f"{workspace}:/work", "-w", "/work", cfg.docker_image]
         argv += ["timeout", str(cfg.command_timeout), "sh", "-c", command]  # the container enforces its own timeout
     elif mode == "none":  # explicit opt-out; still no secrets in the environment
-        argv, env = ["sh", "-c", command], {"PATH": os.environ.get("PATH", "/usr/bin"), "HOME": str(workspace), "PYTHONDONTWRITEBYTECODE": "1"}
+        argv, env = (
+            ["sh", "-c", command],
+            {"PATH": os.environ.get("PATH", "/usr/bin"), "HOME": str(workspace), "PYTHONDONTWRITEBYTECODE": "1"},
+        )
     else:
         raise ValueError(f"unknown sandbox mode {mode!r}")
     try:
-        done = subprocess.run(argv, cwd=workspace, env=env, capture_output=True, text=True, errors="replace", timeout=cfg.command_timeout + 15)
+        done = subprocess.run(
+            argv,
+            cwd=workspace,
+            env=env,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=cfg.command_timeout + 15,
+        )
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {cfg.command_timeout}s"
     output = (done.stdout + done.stderr).strip() or "(no output)"
-    if mode == "bwrap" and done.returncode and output.startswith(("bwrap:", "Failed to start transient scope")):  # the sandbox failed, not the command
+    # the sandbox failed, not the command
+    if mode == "bwrap" and done.returncode and output.startswith(("bwrap:", "Failed to start transient scope")):
         raise RuntimeError(f"sandbox failure: {output[:500]}")
     if done.returncode == 137 and mode != "none":  # SIGKILL: say why, so the agent does not just run it again
         output += "\n(killed: the sandbox allows 1 GB of memory)"
@@ -227,25 +307,37 @@ def _cgroup_limits() -> tuple[str, ...]:
     The CPU quota takes effect only where the user session is delegated the cpu controller (many distributions
     delegate memory and pids only); elsewhere the wall-clock timeout bounds CPU use.
     """
-    argv = ("systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=1G", "-p", "MemorySwapMax=0", "-p", "CPUQuota=200%", "-p", f"TasksMax={MAX_PROCESSES}")
+    argv = (
+        "systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=1G", "-p", "MemorySwapMax=0", "-p",
+        "CPUQuota=200%", "-p", f"TasksMax={MAX_PROCESSES}",
+    )
     try:
         works = subprocess.run(argv + ("true",), capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         works = False
-    return argv if works else ()  # ponytail: no systemd user session (a container, some CI) leaves the wall-clock timeout only; use docker there
+    # ponytail: no systemd user session (a container, some CI) leaves the wall-clock timeout only; use docker there
+    return argv if works else ()
 
 
 def _bwrap(workspace: Path) -> list[str]:
     """bubblewrap: read-only /usr, the workspace at /work, fresh namespaces (no network), empty environment."""
-    argv = ["bwrap", "--ro-bind", "/usr", "/usr", "--ro-bind-try", "/etc/alternatives", "/etc/alternatives", "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache"]
+    argv = [
+        "bwrap", "--ro-bind", "/usr", "/usr", "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
+        "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache",
+    ]
     for top in ("/bin", "/sbin", "/lib", "/lib32", "/lib64"):  # usually symlinks into /usr; mirror the host layout
         if os.path.islink(top):
             argv += ["--symlink", os.readlink(top), top]
         elif os.path.exists(top):
             argv += ["--ro-bind", top, top]
-    argv += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--bind", str(workspace), "/work", "--chdir", "/work"]
+    argv += [
+        "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--bind", str(workspace), "/work", "--chdir", "/work"
+    ]
     argv += ["--unshare-all", "--die-with-parent", "--new-session", "--clearenv"]
-    return argv + ["--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp", "--setenv", "PYTHONDONTWRITEBYTECODE", "1"]
+    return (
+        argv
+        + ["--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp", "--setenv", "PYTHONDONTWRITEBYTECODE", "1"]
+    )
 
 
 @functools.lru_cache(maxsize=None)
@@ -257,12 +349,17 @@ def detect_sandbox() -> str:
                 return "bwrap"
     if shutil.which("docker") and subprocess.run(["docker", "info"], capture_output=True).returncode == 0:
         return "docker"
-    raise RuntimeError("no sandbox available (install bubblewrap or docker), or set HARNESS_SANDBOX=none to run generated code on the host")
+    raise RuntimeError(
+        "no sandbox available (install bubblewrap or docker), or set "
+        "HARNESS_SANDBOX=none to run generated code on the host"
+    )
 
 
 # --- web ---------------------------------------------------------------------------------------
 
-_BROWSER = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+_BROWSER = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+}
 
 
 def urls(text: str) -> set[str]:
@@ -270,7 +367,8 @@ def urls(text: str) -> set[str]:
     found = set()
     for url in re.findall(r"https?://[^\s<>\"'`]+", text):
         url = url.split("#")[0].rstrip(".,;:!?]")
-        while url.endswith(")") and url.count("(") < url.count(")"):  # keep Wikipedia's Foo_(bar), drop "(see https://x)"
+        # keep Wikipedia's Foo_(bar), drop "(see https://x)"
+        while url.endswith(")") and url.count("(") < url.count(")"):
             url = url[:-1].rstrip(".,;:!?]")
         found.add(url)
     return found
@@ -311,7 +409,8 @@ def search_web(query: str) -> list[dict]:
     snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', page, re.S)
     results = []
     for (href, title), snippet in zip(links, snippets + [""] * len(links)):
-        target = urllib.parse.parse_qs(urllib.parse.urlsplit(html.unescape(href)).query).get("uddg", [html.unescape(href)])[0]
+        link = html.unescape(href)
+        target = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query).get("uddg", [link])[0]
         results.append({"title": _strip_tags(title), "url": target, "snippet": _strip_tags(snippet)})
     return results[:8]
 

@@ -23,8 +23,8 @@ PAGE = """<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Research agent team</title>
 <style>
-  body { font: 15px/1.5 system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 16px; background: #111; color: #ddd;
-         display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 16px;
+         background: #111; color: #ddd; display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 20px; }
   main { min-width: 0; }
   #board { position: sticky; top: 16px; align-self: start; font-size: 13px; }
   #board h2 { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: #aaa; }
@@ -37,8 +37,9 @@ PAGE = """<!doctype html>
   #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 13px; min-height: 60vh; }
   .you { color: #7cc4ff; } .event { color: #888; } .error { color: #ff7b72; }
   form { display: flex; gap: 8px; position: sticky; bottom: 0; background: #111; padding: 12px 0; }
-  input { flex: 1; padding: 10px; background: #1c1c1c; color: #eee; border: 1px solid #333; border-radius: 6px; font: inherit; }
-  button { padding: 10px 14px; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 6px; font: inherit; cursor: pointer; }
+  input, button { color: #eee; border-radius: 6px; font: inherit; }
+  input { flex: 1; padding: 10px; background: #1c1c1c; border: 1px solid #333; }
+  button { padding: 10px 14px; background: #2a2a2a; border: 1px solid #444; cursor: pointer; }
 </style>
 <main><div id="log"></div>
 <form id="form">
@@ -48,7 +49,8 @@ PAGE = """<!doctype html>
 <aside id="board"><h2>Task board</h2><div id="cards">no project yet</div></aside>
 <script>
   const log = document.getElementById("log"), input = document.getElementById("message");
-  let token = location.hash.slice(1) || sessionStorage.token || prompt("Access token (printed when the server started)");
+  let token = location.hash.slice(1) || sessionStorage.token ||
+    prompt("Access token (printed when the server started)");
   sessionStorage.token = token;
   const auth = { Authorization: "Bearer " + token };
   function add(text, kind) {
@@ -58,7 +60,8 @@ PAGE = """<!doctype html>
   }
   // The board: polled from /status, so it shows delegation, retries and audit re-runs as they happen.
   const cards = document.getElementById("cards");
-  function state(t) {  // a pending task that already ran was sent back: by a failure (retrying) or by the audit (re-opened)
+  // a pending task that already ran was sent back: by a failure (retrying) or by the audit (re-opened)
+  function state(t) {
     return t.status === "pending" && t.runs ? (t.error ? "retrying" : "reopened") : t.status;
   }
   async function poll() {
@@ -72,15 +75,20 @@ PAGE = """<!doctype html>
         card.innerHTML = "<b></b> <span></span><small></small>";
         card.children[0].textContent = t.id;
         card.children[1].textContent = s;
-        card.children[2].textContent = `${t.agent} · runs ${t.runs} · ${t.seconds}s · ${(t.tokens / 1000).toFixed(1)}k tok`;
+        card.children[2].textContent =
+          `${t.agent} · runs ${t.runs} · ${t.seconds}s · ${(t.tokens / 1000).toFixed(1)}k tok`;
         return card;
       }));
-      if (report.tasks.length) cards.append(Object.assign(document.createElement("small"), { textContent: `${report.status} · audit re-runs since the last change ${report.audit_cycles_used}` }));
+      if (report.tasks.length) {
+        const textContent = `${report.status} · audit re-runs since the last change ${report.audit_cycles_used}`;
+        cards.append(Object.assign(document.createElement("small"), { textContent }));
+      }
     }
     if (!response || response.status !== 401) setTimeout(poll, 1000);
   }
   poll();
-  document.getElementById("stop").onclick = () => fetch("/stop", { method: "POST", headers: auth }).then(() => add("\\n(stop requested)\\n", "event"));
+  document.getElementById("stop").onclick = () =>
+    fetch("/stop", { method: "POST", headers: auth }).then(() => add("\\n(stop requested)\\n", "event"));
   document.getElementById("form").onsubmit = async (submitted) => {
     submitted.preventDefault();
     const message = input.value.trim(); if (!message) return;
@@ -126,7 +134,8 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
             self.wfile.write(data)
 
         def authorized(self) -> bool:
-            ok = hmac.compare_digest(self.headers.get("Authorization", "").encode(), f"Bearer {token}".encode())  # bytes: any header value compares
+            # bytes: any header value compares
+            ok = hmac.compare_digest(self.headers.get("Authorization", "").encode(), f"Bearer {token}".encode())
             if not ok:
                 self.reply(401, "missing or invalid token")
             return ok
@@ -200,7 +209,10 @@ def serve(orchestrator, host: str, port: int) -> None:
     shown = "localhost" if host in ("127.0.0.1", "0.0.0.0") else host
     print(f"Session {orchestrator.session} · open http://{shown}:{server.server_port}/#{token}", flush=True)
     if host not in ("127.0.0.1", "localhost"):
-        print("Listening on a network interface over plain HTTP: put it behind TLS or an SSH tunnel before real remote use.")
+        print(
+            "Listening on a network interface over plain HTTP: "
+            "put it behind TLS or an SSH tunnel before real remote use."
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

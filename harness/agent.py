@@ -67,7 +67,10 @@ def clip(text: str, limit: int = 20_000) -> str:
 
 
 def fence(tool: str, text: str) -> str:
-    """Mark a tool result as untrusted data. A closing tag inside the text is escaped so it cannot end the fence early."""
+    """Mark a tool result as untrusted data.
+
+    A closing tag inside the text is escaped, so it cannot end the fence early.
+    """
     return f'<untrusted tool="{tool}">\n' + re.sub(r"</(\s*untrusted)", r"<\\/\1", text, flags=re.I) + "\n</untrusted>"
 
 
@@ -75,14 +78,24 @@ def run_agent(llm, bus, cfg, system, messages, tools, submit_schema=None, check=
     """Run the loop on `messages` (appended in place). Returns the accepted submit payload, or the final text."""
     offered = list(tools)
     if submit_schema:
-        offered.append(Tool(SUBMIT, "Submit your final result. Call exactly once, when the work is complete.", submit_schema))
+        offered.append(
+            Tool(SUBMIT, "Submit your final result. Call exactly once, when the work is complete.", submit_schema)
+        )
     by_name = {t.name: t for t in tools}
     nudges = 0
 
     for turn in range(cfg.max_turns):
         reply = chat(llm, bus, cfg, system, messages, offered, on_text)
         # Emitted before the reply joins the transcript: if a hook vetoes here, no tool call is left unanswered.
-        bus.emit("llm", model=getattr(llm, "model", ""), turn=turn, stop=reply.stop, usage=reply.usage, text=reply.text[:2000], calls=[c.name for c in reply.tool_calls])
+        bus.emit(
+            "llm",
+            model=getattr(llm, "model", ""),
+            turn=turn,
+            stop=reply.stop,
+            usage=reply.usage,
+            text=reply.text[:2000],
+            calls=[c.name for c in reply.tool_calls],
+        )
         messages.append(reply.as_message())
         if reply.stop == "refusal":
             raise FatalError("the model declined this request")
@@ -93,26 +106,39 @@ def run_agent(llm, bus, cfg, system, messages, tools, submit_schema=None, check=
             nudges += 1
             if nudges > 2:  # three turns in a row without acting
                 raise AgentError("the agent stopped without finishing")
-            nudge = "Your output was cut off; continue." if reply.stop == "max_tokens" else f"Continue. When the work is complete, call `{SUBMIT}`."
+            nudge = (
+                "Your output was cut off; continue."
+                if reply.stop == "max_tokens"
+                else f"Continue. When the work is complete, call `{SUBMIT}`."
+            )
             messages.append({"role": "user", "content": nudge})
             continue
 
         nudges = 0
-        calls = sorted(reply.tool_calls, key=lambda c: c.name == SUBMIT)  # run the other calls of the turn before judging a submit
+        # run the other calls of the turn before judging a submit
+        calls = sorted(reply.tool_calls, key=lambda c: c.name == SUBMIT)
         for i, call in enumerate(calls):
             try:
                 if reply.stop == "max_tokens":  # a truncated input can still parse as valid JSON: never run it
-                    output, error = "Your output hit the length limit and this call was cut off. Retry with smaller pieces.", True
+                    output, error = (
+                        "Your output hit the length limit and this call was cut off. Retry with smaller pieces.",
+                        True,
+                    )
                 elif call.name == SUBMIT and submit_schema:
                     problems = schema_errors(call.args, submit_schema) or (check(call.args) if check else [])
                     bus.emit("gate", passed=not problems, problems=problems)
                     if not problems:
                         return call.args
-                    output, error = "Submission rejected. Fix these problems and submit again:\n- " + "\n- ".join(problems), True
+                    output, error = (
+                        "Submission rejected. Fix these problems and submit again:\n- " + "\n- ".join(problems),
+                        True,
+                    )
                 else:
                     output, error = _call_tool(bus, by_name.get(call.name), call)
             except BaseException:  # interrupted: keep the transcript valid (every call needs a result), then stop
-                messages.extend({"role": "tool", "id": c.id, "content": "Interrupted.", "is_error": True} for c in calls[i:])
+                messages.extend(
+                    {"role": "tool", "id": c.id, "content": "Interrupted.", "is_error": True} for c in calls[i:]
+                )
                 raise
             messages.append({"role": "tool", "id": call.id, "content": clip(output), "is_error": error})
 
@@ -137,5 +163,11 @@ def _call_tool(bus, tool: Tool | None, call) -> tuple[str, bool]:
         bus.emit("post_tool", tool=tool.name, ok=False, output=f"blocked by hook: {veto}")
         return f"Blocked by policy: {veto}", True
     except Exception as exc:
-        bus.emit("error", where=f"tool:{tool.name}", error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc(), will_retry=True)
+        bus.emit(
+            "error",
+            where=f"tool:{tool.name}",
+            error=f"{type(exc).__name__}: {exc}",
+            traceback=traceback.format_exc(),
+            will_retry=True,
+        )
         return f"{type(exc).__name__}: {exc}", True

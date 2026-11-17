@@ -42,12 +42,16 @@ class Memory:
         self._load()
 
     def _load(self) -> None:
-        need = {"kind", "role", "key", "text", "hits", "run"}  # a hand-edited or foreign line must not break every session
+        # a hand-edited or foreign line must not break every session
+        need = {"kind", "role", "key", "text", "hits", "run"}
         self.items = [m for m in read_jsonl(self.path) if isinstance(m, dict) and need <= m.keys()]
 
     @contextmanager
     def _update(self):
-        """Read, change, write as one step: sessions share this file, so a lock keeps one from undoing another's write."""
+        """Read, change, write as one step.
+
+        Sessions share this file, so a lock keeps one from undoing another's write.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path.with_suffix(".lock"), "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)  # released when the lock file closes
@@ -65,20 +69,38 @@ class Memory:
                     m.update(hits=m["hits"] + 1, text=text, ts=time.time())
                     break
             else:
-                self.items.append({"kind": "lesson", "role": role, "key": rule, "text": text, "hits": 1, "run": run, "ts": time.time()})
+                self.items.append(
+                    {
+                        "kind": "lesson",
+                        "role": role,
+                        "key": rule,
+                        "text": text,
+                        "hits": 1,
+                        "run": run,
+                        "ts": time.time(),
+                    }
+                )
 
     def note(self, kind: str, role: str, text: str, run: str) -> None:
         with self._update():
             if not any(m["kind"] == kind and m["text"] == text for m in self.items):
-                self.items.append({"kind": kind, "role": role, "key": "", "text": text, "hits": 1, "run": run, "ts": time.time()})
+                self.items.append(
+                    {"kind": kind, "role": role, "key": "", "text": text, "hits": 1, "run": run, "ts": time.time()}
+                )
 
     def recall(self, role: str, query: str, exclude_run: str = "", k: int = 3) -> list[str]:
         """What `role` should know before starting on `query`: its lessons, plus the most relevant notes."""
-        lessons = sorted((m for m in self.items if m["kind"] == "lesson" and m["role"] == role), key=lambda m: -m["hits"])[:6]
+        lessons = (
+            sorted((m for m in self.items if m["kind"] == "lesson" and m["role"] == role), key=lambda m: -m["hits"])[:6]
+        )
         out = [f"[{m['key']}] {m['text']} (violated {m['hits']}x before)" for m in lessons]
 
         # lexical overlap weighted by rarity (IDF); switch to embeddings when the store outgrows it
-        notes = [(m, _words(m["text"])) for m in self.items if m["kind"] != "lesson" and m["role"] == role and m["run"] != exclude_run]
+        notes = [
+            (m, _words(m["text"]))
+            for m in self.items
+            if m["kind"] != "lesson" and m["role"] == role and m["run"] != exclude_run
+        ]
         frequency = Counter(word for _, words in notes for word in words)
         asked = _words(query)
         scored = [(sum(math.log(1 + len(notes) / frequency[w]) for w in asked & words), m) for m, words in notes]

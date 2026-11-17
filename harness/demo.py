@@ -103,14 +103,39 @@ API_NO_404 = API.replace('    if user is None:\n        return 404, {"error": "u
 TEST_API_NO_404 = TEST_API[: TEST_API.index("    def test_missing")].rstrip() + "\n"
 
 REQUIREMENTS = [
-    {"id": "R1", "text": "Look up a user by id in the mock database.", "acceptance": "get_user returns the stored record for id 1 and None for an unknown id."},
-    {"id": "R2", "text": "Serve GET /users/<id> as JSON.", "acceptance": "A known id answers 200 with the user; an unknown id answers 404."},
+    {
+        "id": "R1",
+        "text": "Look up a user by id in the mock database.",
+        "acceptance": "get_user returns the stored record for id 1 and None for an unknown id.",
+    },
+    {
+        "id": "R2",
+        "text": "Serve GET /users/<id> as JSON.",
+        "acceptance": "A known id answers 200 with the user; an unknown id answers 404.",
+    },
 ]
 SPEC = {
-    "design": "db.py owns an in-memory SQLite database seeded with two users and exposes get_user(db, id). api.py maps GET /users/<id> to (status, JSON body) via lookup(path) and serves it with http.server.",
+    "design": (
+        "db.py owns an in-memory SQLite database seeded with two users and exposes get_user(db, id). "
+        "api.py maps GET /users/<id> to (status, JSON body) via lookup(path) and serves it with http.server."
+    ),
     "work_items": [
-        {"id": "W1", "title": "Mock database", "description": "connect() and get_user(db, user_id).", "files": ["db.py", "test_db.py"], "covers": ["R1"], "depends_on": []},
-        {"id": "W2", "title": "HTTP API", "description": "lookup(path) and the request handler.", "files": ["api.py", "test_api.py"], "covers": ["R2"], "depends_on": ["W1"]},
+        {
+            "id": "W1",
+            "title": "Mock database",
+            "description": "connect() and get_user(db, user_id).",
+            "files": ["db.py", "test_db.py"],
+            "covers": ["R1"],
+            "depends_on": [],
+        },
+        {
+            "id": "W2",
+            "title": "HTTP API",
+            "description": "lookup(path) and the request handler.",
+            "files": ["api.py", "test_api.py"],
+            "covers": ["R2"],
+            "depends_on": ["W1"],
+        },
     ],
     "test_command": "python3 -m unittest -v",
     "run_command": "python3 api.py",
@@ -165,17 +190,29 @@ class ScriptedTeam:
             if not isinstance(report, dict) or "tasks" not in report:
                 return Reply(text=result)
             done = sum(t["status"] == "done" for t in report["tasks"])
-            return Reply(text=f"Status: {report['status']}. {done}/{len(report['tasks'])} tasks done, {report['audit_cycles_used']} audit re-run round(s) since the last change. Files: {', '.join(report['files']) or 'none'} in {report['workspace']}. Use /show to inspect them, or tell me what to change.")
+            return Reply(
+                text=(
+                    f"Status: {report['status']}. {done}/{len(report['tasks'])} tasks done, "
+                    f"{report['audit_cycles_used']} audit re-run round(s) since the last change. "
+                    f"Files: {', '.join(report['files']) or 'none'} in {report['workspace']}. "
+                    "Use /show to inspect them, or tell me what to change."
+                )
+            )
         text = last["content"]
         if text.lower().startswith("ask ") or text.rstrip().endswith("?"):
-            return self.call("ask_expert", expert="researcher", question=text[4:] if text.lower().startswith("ask ") else text)
+            return self.call(
+                "ask_expert", expert="researcher", question=text[4:] if text.lower().startswith("ask ") else text
+            )
         if text.lower().startswith("change "):
             _, task_id, feedback = text.split(" ", 2)
             return self.call("request_changes", task_id=task_id, feedback=feedback)
         if text.lower() in ("resume", "approve", "status"):
             return self.call(text.lower())
         reply = self.call("start_project", task=text)
-        reply.text = "Scripted team: whatever the request, it builds its one canned task (a user-lookup API over a mock database) to show every recovery path.\n"
+        reply.text = (
+            "Scripted team: whatever the request, it builds its one canned task (a user-lookup API over a mock "
+            "database) to show every recovery path.\n"
+        )
         return reply
 
     # --- the experts ---
@@ -189,12 +226,18 @@ class ScriptedTeam:
             return self.call("read_file", path=reference)
         sources = [reference] if reference else []
         if "answer" in tools["submit"].schema["properties"]:  # an ad-hoc question
-            return self.call("submit", answer="From the reference files: " + (results[1][:300] if reference else "nothing relevant was found."), sources=sources)
+            found = results[1][:300] if reference else "nothing relevant was found."
+            return self.call("submit", answer="From the reference files: " + found, sources=sources)
         warned = "RES-GROUNDED" in messages[0]["content"] or any("rejected" in r for r in results)
         if not warned and self.once("researcher-ungrounded"):
             sources = sources + ["https://example.com/never-opened"]
         findings = [{"claim": "Reference material for the task.", "source": s} for s in sources]
-        return self.call("submit", summary="SQLite ships with Python (sqlite3) and http.server is enough for a small JSON API.", findings=findings, open_questions=[])
+        return self.call(
+            "submit",
+            summary="SQLite ships with Python (sqlite3) and http.server is enough for a small JSON API.",
+            findings=findings,
+            open_questions=[],
+        )
 
     def planner(self, messages, tools) -> Reply:
         if self.once("planner-crash"):
@@ -211,7 +254,11 @@ class ScriptedTeam:
 
     def product(self, messages, tools) -> Reply:
         warned = "PRD-IDS" in messages[0]["content"] or any("rejected" in r for r in self.results(messages))
-        requirements = REQUIREMENTS if warned or not self.once("product-duplicate-id") else [REQUIREMENTS[0], {**REQUIREMENTS[1], "id": "R1"}]
+        requirements = (
+            REQUIREMENTS
+            if warned or not self.once("product-duplicate-id")
+            else [REQUIREMENTS[0], {**REQUIREMENTS[1], "id": "R1"}]
+        )
         return self.call("submit", overview="A read-only user lookup API.", requirements=requirements)
 
     def architect(self, messages, tools) -> Reply:
@@ -229,7 +276,10 @@ class ScriptedTeam:
             files = {"api.py": API, "test_api.py": TEST_API}
         else:
             files = {"api.py": API_NO_404, "test_api.py": TEST_API_NO_404}
-        calls = [ToolCall(uuid.uuid4().hex[:8], "write_file", {"path": path, "content": content}) for path, content in files.items()]
+        calls = [
+            ToolCall(uuid.uuid4().hex[:8], "write_file", {"path": path, "content": content})
+            for path, content in files.items()
+        ]
         return Reply(tool_calls=calls, stop="tool_use")
 
     def auditor(self, messages, tools) -> Reply:
@@ -240,9 +290,17 @@ class ScriptedTeam:
             return self.call("read_file", path="api.py")
         missing_404 = bool(results) and "404" not in results[0]
         verdicts = [
-            {"rule": r, "passed": False, "evidence": "api.py lookup() returns 200 with a null body for an unknown id; R2 requires 404.", "fix": "Return 404 when the user is not found, and test it.", "blame": step}
+            {
+                "rule": r,
+                "passed": False,
+                "evidence": "api.py lookup() returns 200 with a null body for an unknown id; R2 requires 404.",
+                "fix": "Return 404 when the user is not found, and test it.",
+                "blame": step,
+            }
             if r == "IMPL-SPEC" and missing_404
-            else {"rule": r, "passed": True, "evidence": "Checked against the upstream result.", "fix": "", "blame": step}
+            else {
+                "rule": r, "passed": True, "evidence": "Checked against the upstream result.", "fix": "", "blame": step
+            }
             for r in rules
         ]
         return self.call("submit", verdicts=verdicts)

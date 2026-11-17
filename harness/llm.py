@@ -81,7 +81,8 @@ def chat(llm, bus, cfg, system, messages, tools, on_text=None) -> Reply:
                 raise
             delay = round(max(cfg.retry_base * 2**attempt + random.uniform(0, cfg.retry_base), exc.retry_after), 1)
             bus.emit("llm_retry", error=str(exc), delay=delay)
-            if streamed:  # the text already shown is not part of any reply: say so, rather than silently showing a second version
+            # the text already shown is not part of any reply: say so, rather than silently showing a second version
+            if streamed:
                 on_text("\n[connection lost; the reply starts again]\n")
                 streamed.clear()
             time.sleep(delay)
@@ -114,14 +115,18 @@ def make_llm(cfg):
 
     from .experts import EXPERTS
 
-    spec = (CLAUDE_ROLES if cfg.provider in ("anthropic", "pi") and not cfg.model else "") + "," + cfg.roles  # later entries win
+    # later entries win
+    spec = (CLAUDE_ROLES if cfg.provider in ("anthropic", "pi") and not cfg.model else "") + "," + cfg.roles
     by_role = {}
     for item in filter(None, (part.strip() for part in spec.split(","))):
         role, _, rest = item.partition("=")
         provider, plus, rest = rest.partition("+") if "+" in rest else (cfg.provider, "", rest)
         model, _, effort = rest.partition("@")  # "@", not ":", because Ollama model names contain a colon
         if role not in {"orchestrator", *EXPERTS} or not model or provider not in backends:
-            raise ValueError(f"bad role entry {item!r}: use role=[provider+]model[@effort] with a role from orchestrator, {', '.join(EXPERTS)}")
+            raise ValueError(
+                f"bad role entry {item!r}: use role=[provider+]model[@effort] with a "
+                f"role from orchestrator, {', '.join(EXPERTS)}"
+            )
         by_role[role] = backends[provider](replace(cfg, provider=provider, model=model, effort=effort or cfg.effort))
     return Roster(backend(cfg), by_role) if by_role else backend(cfg)  # the default serves roles not listed
 
@@ -158,7 +163,11 @@ class AnthropicLLM:
 
     def chat(self, system, messages, tools, on_text=None) -> Reply:
         sdk = self.sdk
-        extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"} if self.model in self.FALLBACK else {}
+        extra = (
+            {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+            if self.model in self.FALLBACK
+            else {}
+        )
         try:
             with self.client.beta.messages.stream(
                 model=self.model,
@@ -167,7 +176,15 @@ class AnthropicLLM:
                 messages=self._messages(messages),
                 # Eager streaming sends large tool inputs (file bodies) as they are generated; the
                 # server then skips validation, so run_agent validates every input against its schema.
-                tools=[{"name": t.name, "description": t.description, "input_schema": t.schema, "eager_input_streaming": True} for t in tools],
+                tools=[
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.schema,
+                        "eager_input_streaming": True,
+                    }
+                    for t in tools
+                ],
                 thinking={"type": "adaptive"},
                 output_config={"effort": self.effort},
                 cache_control={"type": "ephemeral"},  # agent loops resend a growing prefix; cache it
@@ -178,7 +195,9 @@ class AnthropicLLM:
                         on_text(event.text)
                 msg = stream.get_final_message()
         except (sdk.RateLimitError, sdk.APIConnectionError, self.dropped) as exc:
-            raise TransientError(f"{type(exc).__name__}: {exc}", _retry_after(getattr(getattr(exc, "response", None), "headers", None))) from exc
+            raise TransientError(
+                f"{type(exc).__name__}: {exc}", _retry_after(getattr(getattr(exc, "response", None), "headers", None))
+            ) from exc
         except sdk.APIStatusError as exc:
             # A status below 400 means the error arrived inside an already-open stream (typically "overloaded").
             detail = f"{type(exc).__name__} ({exc.status_code}): {exc.message}"
@@ -190,14 +209,12 @@ class AnthropicLLM:
         if msg.stop_reason is None:  # the connection closed cleanly before message_stop: text or tool input may be cut
             raise TransientError("the stream ended before the reply was complete")
 
+        cached = (msg.usage.cache_read_input_tokens or 0) + (msg.usage.cache_creation_input_tokens or 0)
         return Reply(
             text="".join(b.text for b in msg.content if b.type == "text"),
             tool_calls=[ToolCall(b.id, b.name, b.input) for b in msg.content if b.type == "tool_use"],
             stop={"tool_use": "tool_use", "max_tokens": "max_tokens", "refusal": "refusal"}.get(msg.stop_reason, "end"),
-            usage={
-                "in": msg.usage.input_tokens + (msg.usage.cache_read_input_tokens or 0) + (msg.usage.cache_creation_input_tokens or 0),
-                "out": msg.usage.output_tokens,
-            },
+            usage={"in": msg.usage.input_tokens + cached, "out": msg.usage.output_tokens},
             # Thinking blocks must go back unchanged, so the whole content list is replayed as-is.
             native=msg.content or [{"type": "text", "text": "(no output)"}],
         )
@@ -207,7 +224,12 @@ class AnthropicLLM:
         out = []
         for m in messages:
             if m["role"] == "tool":  # all results of one turn go back in a single user message
-                block = {"type": "tool_result", "tool_use_id": m["id"], "content": m["content"], "is_error": m.get("is_error", False)}
+                block = {
+                    "type": "tool_result",
+                    "tool_use_id": m["id"],
+                    "content": m["content"],
+                    "is_error": m.get("is_error", False),
+                }
                 if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
                     out[-1]["content"].append(block)
                 else:
@@ -220,7 +242,8 @@ class AnthropicLLM:
 
 
 class PiLLM:
-    """Any model pi knows, through pi-ai, the model layer of the pi agent toolkit, in a small Node bridge (pi/bridge.mjs).
+    """Any model pi knows, through pi-ai, the model layer of the pi agent toolkit, in a small Node bridge
+    (pi/bridge.mjs).
 
     Only the model connection is pi's. The agent loop, the tools, the hooks and the sandbox stay the harness's own:
     pi-ai returns tool calls without running them. Set up once with `npm install --prefix pi` (Node 22.19+).
@@ -229,17 +252,35 @@ class PiLLM:
 
     BRIDGE = ["node", str(Path(__file__).resolve().parent.parent / "pi" / "bridge.mjs")]
     TIMEOUT = 900  # seconds for one call; pi's own HTTP timeout is shorter, this stops a bridge that hangs
-    PERMANENT = re.compile(r"\b(400|401|403|404|invalid|unauthori[sz]ed|authentication|forbidden|not.found|api.key|credit|no model)\b", re.I)
+    PERMANENT = re.compile(
+        r"\b(400|401|403|404|invalid|unauthori[sz]ed|authentication|forbidden|not.found|api.key|credit|no model)\b",
+        re.I,
+    )
 
     def __init__(self, cfg):
         provider, slash, model = (cfg.model or "claude-opus-5-5").partition("/")
-        self.provider, self.model, self.effort = (provider, model, cfg.effort) if slash else ("anthropic", provider, cfg.effort)
+        self.provider, self.model, self.effort = (
+            (provider, model, cfg.effort) if slash else ("anthropic", provider, cfg.effort)
+        )
 
     def chat(self, system, messages, tools, on_text=None) -> Reply:
-        context = {"systemPrompt": system, "messages": self._messages(messages), "tools": [{"name": t.name, "description": t.description, "parameters": t.schema} for t in tools]}
-        request = json.dumps({"provider": self.provider, "model": self.model, "effort": self.effort, "context": context})
+        context = {
+            "systemPrompt": system,
+            "messages": self._messages(messages),
+            "tools": [{"name": t.name, "description": t.description, "parameters": t.schema} for t in tools],
+        }
+        request = json.dumps(
+            {"provider": self.provider, "model": self.model, "effort": self.effort, "context": context}
+        )
         try:  # stderr joins stdout: one pipe cannot deadlock, and a line that is not JSON is the bridge's own failure
-            bridge = subprocess.Popen(self.BRIDGE, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+            bridge = subprocess.Popen(
+                self.BRIDGE,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                errors="replace",
+            )
         except OSError as exc:
             raise FatalError(f"cannot start the pi bridge (is Node installed?): {exc}") from exc
         watchdog = threading.Timer(self.TIMEOUT, bridge.kill)
@@ -280,10 +321,13 @@ class PiLLM:
         usage = message["usage"]
         return Reply(
             text="".join(b["text"] for b in message["content"] if b["type"] == "text"),
-            # arguments that were not valid JSON arrive as {} with the reason beside them: pass the reason, so the loop rejects the call
+            # arguments that were not valid JSON arrive as {} with the reason beside them: pass the reason, so the loop
+            # rejects the call
             tool_calls=[ToolCall(b["id"], b["name"], b.get("argumentsError") or b["arguments"]) for b in calls],
             stop={"toolUse": "tool_use", "length": "max_tokens"}.get(message["stopReason"], "end"),
-            usage={"in": usage["input"] + usage.get("cacheRead", 0) + usage.get("cacheWrite", 0), "out": usage["output"]},
+            usage={
+                "in": usage["input"] + usage.get("cacheRead", 0) + usage.get("cacheWrite", 0), "out": usage["output"]
+            },
             native=message,  # thinking blocks and signatures must go back unchanged
         )
 
@@ -292,13 +336,25 @@ class PiLLM:
         out, names = [], {}
         for m in messages:
             if m["role"] == "tool":  # pi wants the tool's name with its result
-                out.append({"role": "toolResult", "toolCallId": m["id"], "toolName": names.get(m["id"], ""), "content": [{"type": "text", "text": m["content"]}], "isError": m.get("is_error", False)})
+                out.append(
+                    {
+                        "role": "toolResult",
+                        "toolCallId": m["id"],
+                        "toolName": names.get(m["id"], ""),
+                        "content": [{"type": "text", "text": m["content"]}],
+                        "isError": m.get("is_error", False),
+                    }
+                )
             elif m["role"] == "assistant":
                 names.update({c.id: c.name for c in m.get("tool_calls", [])})
                 native = m.get("native")
-                if not (isinstance(native, dict) and native.get("role") == "assistant"):  # not from pi: rebuild it from what the harness kept
+                # not from pi: rebuild it from what the harness kept
+                if not (isinstance(native, dict) and native.get("role") == "assistant"):
                     blocks = [{"type": "text", "text": m["content"]}] if m["content"] else []
-                    blocks += [{"type": "toolCall", "id": c.id, "name": c.name, "arguments": c.args} for c in m.get("tool_calls", [])]
+                    blocks += [
+                        {"type": "toolCall", "id": c.id, "name": c.name, "arguments": c.args}
+                        for c in m.get("tool_calls", [])
+                    ]
                     native = {"role": "assistant", "content": blocks or [{"type": "text", "text": "(no output)"}]}
                 out.append(native)
             else:
@@ -327,7 +383,10 @@ class OpenAICompatLLM:
             "messages": [{"role": "system", "content": system}, *self._messages(messages)],
         }
         if tools:
-            body["tools"] = [{"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.schema}} for t in tools]
+            body["tools"] = [
+                {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.schema}}
+                for t in tools
+            ]
         headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {self.key}"} if self.key else {})}
         request = urllib.request.Request(self.url, json.dumps(body).encode(), headers)
 
@@ -341,7 +400,10 @@ class OpenAICompatLLM:
                         continue
                     chunk = json.loads(line[5:])
                     if chunk.get("usage"):
-                        reply.usage = {"in": chunk["usage"].get("prompt_tokens", 0), "out": chunk["usage"].get("completion_tokens", 0)}
+                        reply.usage = {
+                            "in": chunk["usage"].get("prompt_tokens", 0),
+                            "out": chunk["usage"].get("completion_tokens", 0),
+                        }
                     for choice in chunk.get("choices") or []:
                         delta = choice.get("delta") or {}
                         if delta.get("content"):
@@ -360,7 +422,9 @@ class OpenAICompatLLM:
         except urllib.error.HTTPError as exc:  # must precede URLError, its base class
             detail = f"HTTP {exc.code}: {exc.read().decode('utf-8', 'replace')[:300]}"
             if exc.code in (408, 409, 429) or exc.code >= 500:
-                raise TransientError(detail, _retry_after({k.lower(): v for k, v in (exc.headers or {}).items()})) from exc
+                raise TransientError(
+                    detail, _retry_after({k.lower(): v for k, v in (exc.headers or {}).items()})
+                ) from exc
             raise FatalError(detail) from exc
         except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
             raise TransientError(f"{type(exc).__name__}: {exc}") from exc
@@ -385,10 +449,22 @@ class OpenAICompatLLM:
                 out.append({"role": "tool", "tool_call_id": m["id"], "content": m["content"]})
             elif m["role"] == "assistant":
                 calls = [
-                    {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": json.dumps(c.args if isinstance(c.args, dict) else {})}}
+                    {
+                        "id": c.id,
+                        "type": "function",
+                        "function": {
+                            "name": c.name, "arguments": json.dumps(c.args if isinstance(c.args, dict) else {})
+                        },
+                    }
                     for c in m.get("tool_calls") or []
                 ]
-                out.append({"role": "assistant", "content": m["content"] or ("" if not calls else None), **({"tool_calls": calls} if calls else {})})
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": m["content"] or ("" if not calls else None),
+                        **({"tool_calls": calls} if calls else {}),
+                    }
+                )
             else:
                 out.append({"role": "user", "content": m["content"]})
         return out

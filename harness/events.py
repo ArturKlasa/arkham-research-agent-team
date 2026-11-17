@@ -95,7 +95,12 @@ def render(e: dict) -> str | None:
         return f"✖ {task} failed: {e['error'][:300]}" + (" — will retry" if e.get("will_retry") else " — giving up")
     if kind == "audit":
         lines = [f"⚖ audit: {len(e['findings'])} finding(s)" if e["findings"] else "⚖ audit: all rules pass"]
-        return "\n".join(lines + [f"    ✖ [{f['rule']}] {f['task']}: {_brief(f['evidence'])}\n      → {f['fix'][:200]}" for f in e["findings"]])
+        return "\n".join(
+            lines + [
+                f"    ✖ [{f['rule']}] {f['task']}: {_brief(f['evidence'])}\n      → {f['fix'][:200]}"
+                for f in e["findings"]
+            ]
+        )
     if kind == "rerun":
         return f"↺ re-running {', '.join(e['tasks'])} (audit cycle {e['cycle']})"
     if kind == "lesson":
@@ -119,11 +124,18 @@ def _brief(evidence: str) -> str:
 def summary_text(s: dict) -> str:
     """The end-of-run block: what the session cost and how often each recovery path fired."""
     calls = sum(r["calls"] for r in s["roles"].values())
-    lines = [f"■ run {s['status']} · {s['seconds']}s of task time · {calls} model calls · tests: {s['tests'] or 'not run'}"]
+    lines = [
+        f"■ run {s['status']} · {s['seconds']}s of task time · {calls} model calls · tests: {s['tests'] or 'not run'}"
+    ]
     tokens = any(r["in"] or r["out"] for r in s["roles"].values())  # the scripted team reports none
-    lines += [f"    {role:<12} {r['calls']:>3} calls" + (f"  {r['in']:>9,} in  {r['out']:>8,} out" if tokens else "") for role, r in s["roles"].items()]
+    lines += [
+        f"    {role:<12} {r['calls']:>3} calls" + (f"  {r['in']:>9,} in  {r['out']:>8,} out" if tokens else "")
+        for role, r in s["roles"].items()
+    ]
     lines.append(
-        f"    recoveries: {s['gate_rejections']} gate rejections · {s['tool_errors']} tool errors · {s['task_retries']} task retries · "
-        f"{s['model_retries']} model-call retries · {s['audit_cycles']} audit re-runs in the session · {s['lessons']} lessons recorded · {s['lessons_recalled']} lessons recalled into handoffs"
+        f"    recoveries: {s['gate_rejections']} gate rejections · {s['tool_errors']} tool errors "
+        f"· {s['task_retries']} task retries · {s['model_retries']} model-call retries · "
+        f"{s['audit_cycles']} audit re-runs in the session · {s['lessons']} lessons recorded · "
+        f"{s['lessons_recalled']} lessons recalled into handoffs"
     )
     return "\n".join(lines)

@@ -68,7 +68,8 @@ class Engine:
         self.board.meta.pop("paused_after", None)
         while task := self.board.ready():
             self.execute(task)
-            if task.status == "done" and task.id in self.cfg.pause_after.split(","):  # the user reviews before the costlier steps
+            # the user reviews before the costlier steps
+            if task.status == "done" and task.id in self.cfg.pause_after.split(","):
                 self.board.meta["paused_after"] = task.id
                 self.board.save()
                 break
@@ -94,7 +95,13 @@ class Engine:
         said = self.said or feedback
         self.board.meta.setdefault("changes", []).append({"task": task_id, "text": said, "read_as": feedback})
         self.board.invalidate(task_id, [])
-        self._memory("note", "feedback", task.agent, f"A user asked for this change at the {task.kind} step: {said}", self.dir.name)
+        self._memory(
+            "note",
+            "feedback",
+            task.agent,
+            f"A user asked for this change at the {task.kind} step: {said}",
+            self.dir.name,
+        )
         return self.run()
 
     def changes(self, task: Task) -> str:
@@ -103,9 +110,22 @@ class Engine:
         They are kept for the whole session, unlike feedback (cleared once a task succeeds), so a later
         re-run cannot quietly undo a change and the auditor knows the deviation was asked for.
         """
-        asked = [c for c in self.board.meta.get("changes", []) if task.id == c["task"] or task.id in self.board.dependents(c["task"])]
-        lines = [f"- The user said: {c['text']}" + (f"\n  The orchestrator read it as: {c['read_as']} (anything here the user did not say is not part of the request)" if c.get("read_as", c["text"]) != c["text"] else "") for c in asked]
-        return "# Changes the user asked for (they override the original task and earlier steps where they differ)\n" + "\n".join(lines) if asked else ""
+        asked = [
+            c
+            for c in self.board.meta.get("changes", [])
+            if task.id == c["task"] or task.id in self.board.dependents(c["task"])
+        ]
+        if not asked:
+            return ""
+        lines = ["# Changes the user asked for (they override the original task and earlier steps where they differ)"]
+        for c in asked:
+            lines.append(f"- The user said: {c['text']}")
+            if c.get("read_as", c["text"]) != c["text"]:
+                lines.append(
+                    f"  The orchestrator read it as: {c['read_as']} "
+                    "(anything here the user did not say is not part of the request)"
+                )
+        return "\n".join(lines)
 
     def approve(self) -> dict:
         status = self.report()["status"]
@@ -123,7 +143,10 @@ class Engine:
             self.execute(task)
         if task.status != "done":
             raise RuntimeError(f"the {expert} could not answer: {task.error}")
-        return task.result["answer"] + ("\n\nSources:\n" + "\n".join(task.result["sources"]) if task.result["sources"] else "")
+        return (
+            task.result["answer"]
+            + ("\n\nSources:\n" + "\n".join(task.result["sources"]) if task.result["sources"] else "")
+        )
 
     # --- running one task -----------------------------------------------------------------------
 
@@ -135,8 +158,11 @@ class Engine:
         with self.bus.scope(task=task.id, agent=task.agent, attempt=task.attempts):
             try:
                 spent = sum(t.tokens for t in self.board.tasks.values())
-                if 0 < self.cfg.max_tokens <= spent:  # ponytail: checked between tasks, so one task can overshoot; check per model call if that matters
-                    raise Block(f"token budget spent ({spent} of {self.cfg.max_tokens}); raise HARNESS_MAX_TOKENS and resume")
+                # ponytail: checked between tasks, so one task can overshoot; check per model call if that matters
+                if 0 < self.cfg.max_tokens <= spent:
+                    raise Block(
+                        f"token budget spent ({spent} of {self.cfg.max_tokens}); raise HARNESS_MAX_TOKENS and resume"
+                    )
                 self.bus.emit("task_start")  # hooks may veto
                 if task.kind == "audit":
                     findings = auditor.sweep(self)
@@ -154,8 +180,11 @@ class Engine:
                 final = isinstance(exc, (FatalError, Block)) or task.attempts >= self.cfg.max_attempts
                 task.error = f"{type(exc).__name__}: {exc}"
                 task.status = "failed" if final else "pending"
-                task.feedback.append(f"Attempt {task.attempts} failed with {task.error}")  # also when final: `resume` retries it
-                self.bus.emit("error", where="task", error=task.error, traceback=traceback.format_exc(), will_retry=not final)
+                # also when final: `resume` retries it
+                task.feedback.append(f"Attempt {task.attempts} failed with {task.error}")
+                self.bus.emit(
+                    "error", where="task", error=task.error, traceback=traceback.format_exc(), will_retry=not final
+                )
             finally:
                 task.seconds = round(task.seconds + time.time() - started, 1)
                 self.board.save()
@@ -176,21 +205,42 @@ class Engine:
         task.meta["consulted"] = list(task.meta.get("consulted", [])) if task.result else []
         messages = [{"role": "user", "content": self.handoff(task)}]
         schema = ANSWER if task.kind == "adhoc" else expert.schema
-        return run_agent(for_role(self.llm, task.agent), self.bus, self.cfg, expert.system, messages, self._tools(task, expert), schema, lambda payload: self.gate(task, payload))
+        return run_agent(
+            for_role(self.llm, task.agent),
+            self.bus,
+            self.cfg,
+            expert.system,
+            messages,
+            self._tools(task, expert),
+            schema,
+            lambda payload: self.gate(task, payload),
+        )
 
     def handoff(self, task: Task) -> str:
         """Everything the expert needs, and nothing else: assignment, upstream results, feedback, memory."""
         expert, project = EXPERTS[task.agent], self.board.meta.get("task", "")
         if task.kind == "adhoc":
-            parts = [f"# Question\n{task.meta['question']}"] + ([f"# Context: the project this session is building\n{project}"] if project else [])
+            parts = (
+                [f"# Question\n{task.meta['question']}"]
+                + ([f"# Context: the project this session is building\n{project}"] if project else [])
+            )
         else:
             parts = [f"# Project task\n{project}", f"# Your assignment\n{expert.assignment}"]
             if task.kind == "implement":
                 existing = self.ws.files(with_sources=False) or "none yet"
-                parts.append(f"# Your work item\n{json.dumps(task.meta['item'], indent=1)}\n\nFiles already in the workspace: {existing}")
-            parts += [f"# Upstream result: {dep}\n{json.dumps(self.board.tasks[dep].result, indent=1)}" for dep in expert.needs]
+                parts.append(
+                    f"# Your work item\n{json.dumps(task.meta['item'], indent=1)}\n\nFiles already in the workspace: "
+                    f"{existing}"
+                )
+            parts += [
+                f"# Upstream result: {dep}\n{json.dumps(self.board.tasks[dep].result, indent=1)}"
+                for dep in expert.needs
+            ]
             if task.result:
-                parts.append(f"# Your previous submission (revise it rather than starting over)\n{json.dumps(task.result, indent=1)}")
+                parts.append(
+                    "# Your previous submission (revise it rather than starting "
+                    f"over)\n{json.dumps(task.result, indent=1)}"
+                )
         if self.ws.sources:
             parts.append("# Reference files\nRead-only reference material is available under sources/.")
         parts.append(self.changes(task))
@@ -212,12 +262,14 @@ class Engine:
 
     def _tools(self, task: Task, expert) -> list[Tool]:
         writable = set(task.meta["item"]["files"]) if task.kind == "implement" else None
-        # Opened before: a revision may re-open the sources it cites. User URLs: from their raw messages, see Orchestrator.send.
+        # Opened before: a revision may re-open the sources it cites. User URLs: from their raw messages, see
+        # Orchestrator.send.
         fetchable = set(self.board.meta.get("user_urls", [])) | {c.split("#")[0] for c in task.meta["consulted"]}
         tools = make_tools(self.ws, self.cfg, task.meta["consulted"], writable, fetchable)
         tools[ASK] = Tool(
             ASK,
-            "Ask the researcher to establish one specific fact from the reference files or the web. Use only when a missing fact blocks you.",
+            "Ask the researcher to establish one specific fact from the reference files or the web. "
+            "Use only when a missing fact blocks you.",
             obj(question=TEXT),
             lambda args: self.consult("researcher", args["question"], parent=task.id),
         )
@@ -227,7 +279,9 @@ class Engine:
     def _finish(self, task: Task) -> None:
         artifacts = self.dir / "artifacts"
         artifacts.mkdir(exist_ok=True)
-        (artifacts / f"{task.id.replace(':', '-')}.md").write_text(f"# {task.id} ({task.agent})\n\n{to_markdown(task.result)}\n")
+        (artifacts / f"{task.id.replace(':', '-')}.md").write_text(
+            f"# {task.id} ({task.agent})\n\n{to_markdown(task.result)}\n"
+        )
         if task.kind == "spec":
             self._expand(task.result)
         if task.kind == "audit":  # before the audit is saved as done, so findings are never left unacted on
@@ -256,8 +310,15 @@ class Engine:
     def _act_on_audit(self, findings: list[dict]) -> None:
         self.bus.emit("audit", findings=findings)
         research = self.board.tasks["research"]
-        if research.meta.get("judged") == research.version:  # a brief read from the web enters memory only once the auditor passed it
-            self._memory("note", "research", "researcher", f"For the task \"{self.board.meta['task'][:200]}\": {research.result['summary'][:1500]}", self.dir.name)
+        # a brief read from the web enters memory only once the auditor passed it
+        if research.meta.get("judged") == research.version:
+            self._memory(
+                "note",
+                "research",
+                "researcher",
+                f"For the task \"{self.board.meta['task'][:200]}\": {research.result['summary'][:1500]}",
+                self.dir.name,
+            )
         if not findings:
             return
         rules = {rule.id: rule for rule in RULES + [SUITE]}
@@ -269,7 +330,9 @@ class Engine:
         self.board.meta["audit_cycles"] += 1
         blamed: dict[str, list[str]] = {}
         for f in findings:
-            blamed.setdefault(f["task"], []).append(f"Audit finding [{f['rule']}]: {f['evidence']}\nRequired fix: {f['fix']}")
+            blamed.setdefault(f["task"], []).append(
+                f"Audit finding [{f['rule']}]: {f['evidence']}\nRequired fix: {f['fix']}"
+            )
         for task_id, notes in blamed.items():
             self.board.invalidate(task_id, notes)
         self.bus.emit("rerun", tasks=sorted(blamed), cycle=self.board.meta["audit_cycles"])
@@ -288,7 +351,9 @@ class Engine:
     def _tests(self) -> str | None:
         """The last test-suite run, executed by the harness in the sandbox during the audit."""
         suites = self.bus.read(type="suite")
-        return None if not suites else "pass" if suites[-1]["exit_code"] == 0 else f"fail (exit {suites[-1]['exit_code']})"
+        return (
+            None if not suites else "pass" if suites[-1]["exit_code"] == 0 else f"fail (exit {suites[-1]['exit_code']})"
+        )
 
     def summary(self) -> dict:
         """Numbers for the whole session, counted from the trail and the board."""
@@ -301,7 +366,10 @@ class Engine:
         return {
             "status": self.report()["status"],
             "seconds": round(sum(t.seconds for t in self.board.tasks.values()), 1),
-            "roles": {role: {"calls": c, "in": i, "out": o} for role, (c, i, o) in sorted(roles.items(), key=lambda r: -r[1][0])},
+            "roles": {
+                role: {"calls": c, "in": i, "out": o}
+                for role, (c, i, o) in sorted(roles.items(), key=lambda r: -r[1][0])
+            },
             "task_retries": count(lambda e: e["type"] == "error" and e["where"] == "task" and e.get("will_retry")),
             "model_retries": count(lambda e: e["type"] == "llm_retry"),
             "tool_errors": count(lambda e: e["type"] == "error" and e["where"].startswith("tool:")),
@@ -331,7 +399,15 @@ class Engine:
             "workspace": str(self.ws.root),
             "run_command": spec.result["run_command"] if spec and spec.result else None,
             "tasks": [
-                {"id": t.id, "agent": t.agent, "status": t.status, "runs": t.runs, "seconds": t.seconds, "tokens": t.tokens, **({"error": t.error} if t.error else {})}
+                {
+                    "id": t.id,
+                    "agent": t.agent,
+                    "status": t.status,
+                    "runs": t.runs,
+                    "seconds": t.seconds,
+                    "tokens": t.tokens,
+                    **({"error": t.error} if t.error else {}),
+                }
                 for t in tasks
             ],
             "audit": audit.result if audit and audit.status == "done" else None,
@@ -344,7 +420,9 @@ class Engine:
         """Read an artifact (artifacts/<step>) or a workspace file; with no name, list what exists."""
         artifacts = self.dir / "artifacts"
         if not name:
-            listing = [f"artifacts/{p.stem}" for p in sorted(artifacts.glob("*.md"))] + self.ws.files(with_sources=False)
+            listing = (
+                [f"artifacts/{p.stem}" for p in sorted(artifacts.glob("*.md"))] + self.ws.files(with_sources=False)
+            )
             return "\n".join(listing) or "(nothing yet)"
         if name.startswith("artifacts/"):
             path = (artifacts / name.removeprefix("artifacts/")).with_suffix(".md").resolve()
@@ -359,6 +437,9 @@ def to_markdown(value, depth: int = 2) -> str:
     if isinstance(value, dict):
         return "\n\n".join(f"{'#' * depth} {key}\n\n{to_markdown(item, depth + 1)}" for key, item in value.items())
     if isinstance(value, list):
-        rows = ["; ".join(f"**{k}**: {v}" for k, v in item.items()) if isinstance(item, dict) else str(item) for item in value]
+        rows = [
+            "; ".join(f"**{k}**: {v}" for k, v in item.items()) if isinstance(item, dict) else str(item)
+            for item in value
+        ]
         return "\n".join(f"- {row}" for row in rows) or "_none_"
     return str(value)

@@ -30,7 +30,11 @@ from .tools import make_tools, run_sandboxed
 def sweep(eng) -> list[dict]:
     tasks = eng.board.pipeline()
 
-    findings = [_finding(rule.id, task.id, problem, rule.text) for task in tasks for rule, problem in violations(task.result, task, eng)]
+    findings = [
+        _finding(rule.id, task.id, problem, rule.text)
+        for task in tasks
+        for rule, problem in violations(task.result, task, eng)
+    ]
     findings = findings or run_suite(eng)
     if findings:
         return findings
@@ -55,33 +59,58 @@ def run_suite(eng) -> list[dict]:
     code, output = run_sandboxed(eng.cfg, eng.ws.root, command)
     eng.bus.emit("suite", command=command, exit_code=code, output=output[-3000:])
     ran, skipped = re.search(r"\bRan (\d+) tests?\b", output), re.search(r"\bskipped=(\d+)", output)
-    tested = (ran and int(ran[1]) > int(skipped[1] if skipped else 0)) or re.search(r"\b[1-9]\d* passed\b", output)  # unittest, or pytest; all skipped proves nothing
+    # unittest, or pytest; all skipped proves nothing
+    tested = (ran and int(ran[1]) > int(skipped[1] if skipped else 0)) or re.search(r"\b[1-9]\d* passed\b", output)
     builders = [t for t in eng.board.pipeline() if t.kind == "implement"]
     if code == 0 and tested:
         # The architect wrote the command, so it may run only part of the suite. unittest -v names each test's module;
         # ponytail: without -v (or with pytest) there is nothing to compare, and the check is skipped.
         modules = {part for found in re.findall(r"\(([\w.]+)\) \.\.\. ", output) for part in found.split(".")}
-        test_files = [f for t in builders for f in t.meta["item"]["files"] if f.rsplit("/", 1)[-1].startswith("test") and f.endswith(".py")]
+        test_files = [
+            f
+            for t in builders
+            for f in t.meta["item"]["files"]
+            if f.rsplit("/", 1)[-1].startswith("test") and f.endswith(".py")
+        ]
         unrun = [f for f in test_files if modules and f.rsplit("/", 1)[-1][:-3] not in modules]
         if not unrun:
             return []
-        fix = "Make test_command run every test file of the work items, e.g. `python3 -m unittest discover -v` from the workspace root."
-        return [_finding(SUITE.id, "spec", f"`{command}` passed but never ran {', '.join(unrun)}:\n{output[-3000:]}", fix)]
+        fix = (
+            "Make test_command run every test file of the work items, e.g. "
+            "`python3 -m unittest discover -v` from the workspace root."
+        )
+        return [
+            _finding(SUITE.id, "spec", f"`{command}` passed but never ran {', '.join(unrun)}:\n{output[-3000:]}", fix)
+        ]
     if code in (126, 127):  # the shell could not run the command at all: the spec chose it, the code is not at fault
-        fix = "Make test_command a command that exists in the sandbox (Python standard library only), run from the workspace root."
+        fix = (
+            "Make test_command a command that exists in the sandbox (Python "
+            "standard library only), run from the workspace root."
+        )
         return [_finding(SUITE.id, "spec", f"`{command}` could not be run (exit code {code}):\n{output[-3000:]}", fix)]
-    named = {t.id for t in builders if any(re.search(r"(?<![\w-])" + re.escape(f), output) for f in t.meta["item"]["files"])}
+    named = {
+        t.id for t in builders if any(re.search(r"(?<![\w-])" + re.escape(f), output) for f in t.meta["item"]["files"])
+    }
     if not tested and (code == 0 or "Ran 0 tests" in output or not named):
         # A suite that tests nothing proves nothing, and one that stops before any test without naming a file (e.g.
-        # "No module named pytest") failed on its command. The spec owns the command and the test layout; the test files may be at fault too.
+        # "No module named pytest") failed on its command. The spec owns the command and the test layout; the test files
+        # may be at fault too.
         evidence = f"`{command}` exited with code {code} without running a single test:\n{output[-3000:]}"
-        fix = "Make test_command run the unittest suite from the workspace root, and make the test files discoverable by it (test*.py with TestCase classes)."
+        fix = (
+            "Make test_command run the unittest suite from the workspace root, and make the test files discoverable by "
+            "it (test*.py with TestCase classes)."
+        )
         owners = [t.id for t in builders if any("test" in f.rsplit("/", 1)[-1] for f in t.meta["item"]["files"])]
         return [_finding(SUITE.id, task_id, evidence, fix) for task_id in ["spec"] + owners]
-    # A traceback names the test file, but the defect may be in code the test exercises: include everything the named items build on.
+    # A traceback names the test file, but the defect may be in code the test exercises: include everything the named
+    # items build on.
     blamed = named | {t.id for t in builders if eng.board.dependents(t.id) & named}
     evidence = f"`{command}` exited with code {code}:\n{output[-3000:]}"
-    return [_finding(SUITE.id, t.id, evidence, "Run the full test command and make it pass before submitting.") for t in builders if t.id in blamed or not named]
+    return [
+        _finding(SUITE.id, t.id, evidence, "Run the full test command and make it pass before submitting.")
+        for t in builders
+        if t.id in blamed or not named
+    ]
 
 
 def judge(eng, task) -> list[dict]:
@@ -91,36 +120,67 @@ def judge(eng, task) -> list[dict]:
         return []
     auditor = EXPERTS["auditor"]
     upstream = {dep: eng.board.tasks[dep].result for dep in EXPERTS[task.agent].needs}
+    work_item = (
+        f"\nWork item:\n{json.dumps(task.meta['item'], indent=1)}\nIts files are in the workspace; read them."
+        if task.kind == "implement"
+        else ""
+    )
     brief = "\n\n".join(
         part
         for part in [
             f"# Project task\n{eng.board.meta['task']}",
-            f"# Step under audit\n{task.id}, produced by the {task.agent}." + (f"\nWork item:\n{json.dumps(task.meta['item'], indent=1)}\nIts files are in the workspace; read them." if task.kind == "implement" else ""),
+            f"# Step under audit\n{task.id}, produced by the {task.agent}.{work_item}",
             f"# What that step was given\n{json.dumps(upstream, indent=1)}",
             eng.changes(task),
             f"# Output under audit\n{json.dumps(task.result, indent=1)}",
             _outward(eng, task),
             "# Rules to judge\n" + "\n".join(f"- {r.id}: {r.text}" for r in rules),
-            "Submit exactly one verdict per rule. For a failed rule, `evidence` quotes the defect and `fix` says what to change. "
-            f"`blame` is the step whose output must change: {task.id} itself, or the upstream step ({', '.join(upstream) or 'none'}) whose mistake it inherited.",
+            "Submit exactly one verdict per rule. For a failed rule, `evidence` "
+            "quotes the defect and `fix` says what to change. "
+            f"`blame` is the step whose output must change: {task.id} itself, or the upstream step "
+            f"({', '.join(upstream) or 'none'}) whose mistake it inherited.",
         ]
         if part
     )
     ids = [r.id for r in rules]
-    blame = {"type": "string", "enum": [task.id, *upstream]}  # a defect inherited from upstream is fixed there, not by re-running this step
-    schema = obj(verdicts=arr(obj(rule={"type": "string", "enum": ids}, passed={"type": "boolean"}, evidence=TEXT, fix={"type": "string"}, blame=blame), 1))
+    # a defect inherited from upstream is fixed there, not by re-running this step
+    blame = {"type": "string", "enum": [task.id, *upstream]}
+    schema = obj(
+        verdicts=arr(
+            obj(
+                rule={"type": "string", "enum": ids},
+                passed={"type": "boolean"},
+                evidence=TEXT,
+                fix={"type": "string"},
+                blame=blame,
+            ),
+            1,
+        )
+    )
 
     def complete(payload):  # the auditor is validated too: no rule skipped, none judged twice
         got = sorted(v["rule"] for v in payload["verdicts"])
         return [] if got == sorted(ids) else [f"expected exactly one verdict for each of {ids}, got {got}"]
 
     tools = make_tools(eng.ws, eng.cfg, consulted=[])
-    result = run_agent(for_role(eng.llm, "auditor"), eng.bus, eng.cfg, auditor.system, [{"role": "user", "content": brief}], [tools[n] for n in auditor.tools], schema, complete)
+    result = run_agent(
+        for_role(eng.llm, "auditor"),
+        eng.bus,
+        eng.cfg,
+        auditor.system,
+        [{"role": "user", "content": brief}],
+        [tools[n] for n in auditor.tools],
+        schema,
+        complete,
+    )
     return result["verdicts"]
 
 
 def _outward(eng, task) -> str:
-    """For code: every line that reaches outside the program, found by the harness. A comment cannot hide one; the list covers the usual routes (imports, known calls, computed names), not every trick."""
+    """For code: every line that reaches outside the program, found by the harness.
+
+    A comment cannot hide one; the list covers the usual routes (imports, known calls, computed names), not every trick.
+    """
     if task.kind != "implement":
         return ""
     lines = []
@@ -131,7 +191,10 @@ def _outward(eng, task) -> str:
                 lines += [f"- {name} {found}" for found in reaches_out(path.read_text(errors="replace"))]
         except (PermissionError, SyntaxError, ValueError):
             pass  # IMPL-FILES has already reported it
-    return "# Lines that reach outside the program (listed by the harness, not by the engineer)\n" + ("\n".join(lines) or "none")
+    return (
+        "# Lines that reach outside the program (listed by the harness, not by the engineer)\n"
+        + ("\n".join(lines) or "none")
+    )
 
 
 def _finding(rule: str, task: str, evidence: str, fix: str) -> dict:
