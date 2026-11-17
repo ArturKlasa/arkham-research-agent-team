@@ -14,6 +14,7 @@ class Config:
     model: str = ""  # anthropic defaults to claude-opus-5-5; required for provider=openai
     effort: str = "medium"  # anthropic only: low | medium | high | xhigh | max
     base_url: str = "http://localhost:11434/v1"  # provider=openai; the default is a local Ollama
+    roles: str = ""  # per-role models, "architect=claude-opus-5-5@high,auditor=..."; see llm.CLAUDE_ROLES
     api_key: str = ""  # provider=openai; falls back to OPENAI_API_KEY, may be empty for local servers
 
     # Resilience limits

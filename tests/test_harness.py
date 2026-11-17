@@ -22,7 +22,7 @@ from harness.board import Board, Task
 from harness.config import Config
 from harness.demo import SPEC, ScriptedTeam
 from harness.events import Block, Halt
-from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, Reply, ToolCall, TransientError
+from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, Reply, Roster, ToolCall, TransientError, for_role, make_llm
 from harness.orchestrator import Orchestrator
 from harness.server import build
 from harness.memory import Memory
@@ -347,6 +347,28 @@ class Boundaries(HarnessCase):
             cfg = Config.load(provider="anthropic")
         self.assertEqual((cfg.provider, cfg.max_turns, cfg.max_attempts), ("anthropic", 7, 3))
 
+    def test_each_role_talks_to_its_own_model_and_unlisted_roles_use_the_default(self):
+        team, used = ScriptedTeam(faults=False), set()
+
+        class Tagged:  # one shared scripted team behind several "models", recording which one each call reached
+            def __init__(self, tag):
+                self.tag = tag
+
+            def chat(self, *args, **kwargs):
+                used.add(self.tag)
+                return team.chat(*args, **kwargs)
+
+        roster = Roster(Tagged("default"), {"architect": Tagged("architect"), "auditor": Tagged("auditor")})
+        self.assertEqual(self.team(llm=roster).engine.start(TASK)["status"], "completed")
+        self.assertEqual(used, {"default", "architect", "auditor"})
+
+    def test_per_role_models_are_parsed_and_checked(self):
+        llm = make_llm(Config(provider="openai", model="gpt-oss:20b", roles="architect=qwen3:8b@high, auditor=openai/gpt-oss-120b"))
+        self.assertEqual([for_role(llm, r).model for r in ("architect", "auditor", "engineer")], ["qwen3:8b", "openai/gpt-oss-120b", "gpt-oss:20b"])
+        self.assertEqual(make_llm(Config(provider="openai", model="m")).model, "m")  # no roles: one model for everyone
+        for bad in ("archtect=m", "architect=", "architect"):
+            self.assertRaises(ValueError, make_llm, Config(provider="openai", model="m", roles=bad))
+
     def test_a_torn_line_in_memory_or_trail_does_not_stop_a_session(self):
         orch = self.team(faults=False)
         orch.engine.memory.lesson("product", "PRD-IDS", "ids are unique", "s0")
@@ -561,6 +583,16 @@ class ClaudeBackend(HarnessCase):
         self.assertRaises(TransientError, self.llm.chat, "closed early", [{"role": "user", "content": "hi"}], [self.tool])  # half a tool input
         self.assertRaises(TransientError, self.llm.chat, "dropped", [{"role": "user", "content": "hi"}], [self.tool])
         self.assertRaises(FatalError, self.llm.chat, "invalid", [{"role": "user", "content": "hi"}], [])
+
+
+@unittest.skipUnless(importlib.util.find_spec("anthropic"), "anthropic SDK not installed")
+class ClaudeLineUp(unittest.TestCase):
+    def test_claude_uses_a_model_per_role_unless_one_model_is_chosen(self):
+        llm = make_llm(Config())
+        self.assertEqual((for_role(llm, "orchestrator").model, for_role(llm, "architect").model, for_role(llm, "architect").effort), ("claude-sonnet-5-5", "claude-opus-5-5", "high"))
+        self.assertEqual(for_role(make_llm(Config(model="claude-opus-5-5")), "orchestrator").model, "claude-opus-5-5")
+        tuned = make_llm(Config(roles="auditor=claude-fable-5-2@max"))  # overrides one role, keeps the rest of the line-up
+        self.assertEqual((for_role(tuned, "auditor").model, for_role(tuned, "auditor").effort, for_role(tuned, "orchestrator").model), ("claude-fable-5-2", "max", "claude-sonnet-5-5"))
 
 
 class Gateway(HarnessCase):

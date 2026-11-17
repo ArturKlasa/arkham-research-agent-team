@@ -9,7 +9,7 @@ The orchestration is written from scratch in about 2,300 lines of Python: delega
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e .      # or: uv venv && uv pip install -e .
 
-# 1. Claude (default)
+# 1. Claude (default): a model per agent role, see Models below
 export ANTHROPIC_API_KEY=...
 .venv/bin/python -m harness
 
@@ -29,10 +29,32 @@ Then type what you want built. Other entry points and options:
 .venv/bin/python -m harness --sources ./docs              # give the agents reference files to research
 .venv/bin/python -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
 .venv/bin/python -m harness --hooks examples/hooks.py     # load policy hooks
-.venv/bin/python -m unittest discover -s tests -v         # 40 tests, offline, about 7 seconds
+.venv/bin/python -m unittest discover -s tests -v         # 43 tests, offline, about 7 seconds
 ```
 
 Requirements: Linux or macOS (the memory file is locked with `fcntl`, so Windows needs WSL), Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
+
+### Models
+
+Each agent role talks to its own model. With Claude, and no `--model` or `--roles` given, the line-up is:
+
+| Role | Model | Why |
+|---|---|---|
+| orchestrator | Claude Sonnet 5.5 | user-facing streaming and routing: latency matters more than depth |
+| researcher, planner, product | Claude Sonnet 5.5 | reading and short structured documents whose shape the gates check |
+| architect | Claude Opus 5.5, effort high | a spec mistake spreads to every work item after it |
+| engineer | Claude Opus 5.5, effort medium | the most tokens, but every re-run repeats gate, tests and audit |
+| auditor | Claude Opus 5.5, effort high | judges everyone else's work |
+
+Change single roles with `--roles` (or `HARNESS_ROLES`): `role=model[@effort]`, comma-separated; the rest of the line-up stays. `--model` replaces the line-up: it is the model for every role `--roles` does not list. With an OpenAI-compatible server `--model` is required and effort is ignored:
+
+```bash
+.venv/bin/python -m harness --roles auditor=claude-fable-5-2@high          # only the auditor changes
+.venv/bin/python -m harness --provider openai --base-url https://openrouter.ai/api/v1 \
+    --model openai/gpt-oss-120b --roles orchestrator=openai/gpt-oss-20b
+```
+
+The model behind every call is recorded in the trail (`llm` events). One provider serves all roles in a run, so an auditor from a different model family than the agents it judges is not yet possible.
 
 ## What a session looks like
 
@@ -229,4 +251,4 @@ Not done: running on a lower-level third-party harness (pi, hermes, openclaw). T
 
 ## Tests
 
-`.venv/bin/python -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, a change request staying in force through later re-runs and reaching the auditor, a suite that runs no tests, transitive blame, pause and resume, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, peer delegation, a hook veto, workspace confinement, file ownership under shell commands, paged file reads (including a file that is one long line), the placeholder check, work-item id format, empty package markers and unparsable files, settings precedence, a research revision keeping the sources it already opened, concurrent memory writes, the address guard, sandbox isolation, both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream and a stream that is cut or closed early), and the HTTP gateway.
+`.venv/bin/python -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, a change request staying in force through later re-runs and reaching the auditor, a suite that runs no tests, transitive blame, pause and resume, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, peer delegation, a hook veto, workspace confinement, file ownership under shell commands, paged file reads (including a file that is one long line), the placeholder check, work-item id format, empty package markers and unparsable files, settings precedence, per-role model routing, a research revision keeping the sources it already opened, concurrent memory writes, the address guard, sandbox isolation, both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream and a stream that is cut or closed early), and the HTTP gateway.

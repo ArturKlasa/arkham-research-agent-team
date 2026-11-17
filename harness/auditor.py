@@ -22,6 +22,7 @@ import re
 
 from .agent import run_agent
 from .experts import EXPERTS, TEXT, arr, obj
+from .llm import for_role
 from .rules import SUITE, judged, violations
 from .tools import make_tools, run_sandboxed
 
@@ -98,7 +99,7 @@ def judge(eng, task) -> list[dict]:
         return [] if got == sorted(ids) else [f"expected exactly one verdict for each of {ids}, got {got}"]
 
     tools = make_tools(eng.ws, eng.cfg, consulted=[])
-    result = run_agent(eng.llm, eng.bus, eng.cfg, auditor.system, [{"role": "user", "content": brief}], [tools[n] for n in auditor.tools], schema, complete)
+    result = run_agent(for_role(eng.llm, "auditor"), eng.bus, eng.cfg, auditor.system, [{"role": "user", "content": brief}], [tools[n] for n in auditor.tools], schema, complete)
     return result["verdicts"]
 
 

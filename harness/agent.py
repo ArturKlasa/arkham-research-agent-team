@@ -76,7 +76,7 @@ def run_agent(llm, bus, cfg, system, messages, tools, submit_schema=None, check=
     for turn in range(cfg.max_turns):
         reply = chat(llm, bus, cfg, system, messages, offered, on_text)
         # Emitted before the reply joins the transcript: if a hook vetoes here, no tool call is left unanswered.
-        bus.emit("llm", turn=turn, stop=reply.stop, usage=reply.usage, text=reply.text[:2000], calls=[c.name for c in reply.tool_calls])
+        bus.emit("llm", model=getattr(llm, "model", ""), turn=turn, stop=reply.stop, usage=reply.usage, text=reply.text[:2000], calls=[c.name for c in reply.tool_calls])
         messages.append(reply.as_message())
         if reply.stop == "refusal":
             raise FatalError("the model declined this request")

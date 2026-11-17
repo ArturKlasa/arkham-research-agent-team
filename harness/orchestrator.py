@@ -15,7 +15,7 @@ from pathlib import Path
 from .agent import Tool, run_agent
 from .engine import Engine
 from .experts import TEXT, obj
-from .llm import make_llm
+from .llm import for_role, make_llm
 
 EXPERTS_TO_ASK = ["researcher", "planner", "product", "architect", "engineer"]
 
@@ -76,7 +76,7 @@ class Orchestrator:
         """One user turn. The reply streams through on_text; progress arrives as events on engine.bus."""
         self.messages.append({"role": "user", "content": text})
         with self.engine.bus.scope(agent="orchestrator"):
-            run_agent(self.llm, self.engine.bus, self.cfg, SYSTEM, self.messages, self.tools, on_text=on_text)
+            run_agent(for_role(self.llm, "orchestrator"), self.engine.bus, self.cfg, SYSTEM, self.messages, self.tools, on_text=on_text)
 
     def command(self, line: str) -> str:
         """Slash commands: read-only views that do not involve the model."""

@@ -63,16 +63,54 @@ def chat(llm, bus, cfg, system, messages, tools, on_text=None) -> Reply:
     raise AssertionError("unreachable")
 
 
+# The default Claude line-up, one model per agent role (see the README for why). Format: role=model[@effort],...
+CLAUDE_ROLES = (
+    "orchestrator=claude-sonnet-5-5,researcher=claude-sonnet-5-5,planner=claude-sonnet-5-5,product=claude-sonnet-5-5,"
+    "architect=claude-opus-5-5@high,engineer=claude-opus-5-5@medium,auditor=claude-opus-5-5@high"
+)
+
+
 def make_llm(cfg):
-    if cfg.provider == "anthropic":
-        return AnthropicLLM(cfg)
-    if cfg.provider == "openai":
-        return OpenAICompatLLM(cfg)
+    """The backend for cfg.provider, or a Roster when models are set per role.
+
+    With provider=anthropic and no --model, CLAUDE_ROLES applies and cfg.roles overrides single roles of it.
+    An explicit --model is the model for every role cfg.roles does not list.
+    """
     if cfg.provider == "scripted":
         from .demo import ScriptedTeam
 
         return ScriptedTeam()
-    raise ValueError(f"unknown provider {cfg.provider!r} (use anthropic, openai or scripted)")
+    backend = {"anthropic": AnthropicLLM, "openai": OpenAICompatLLM}.get(cfg.provider)
+    if backend is None:
+        raise ValueError(f"unknown provider {cfg.provider!r} (use anthropic, openai or scripted)")
+    from dataclasses import replace
+
+    from .experts import EXPERTS
+
+    spec = (CLAUDE_ROLES if cfg.provider == "anthropic" and not cfg.model else "") + "," + cfg.roles  # later entries win
+    by_role = {}
+    for item in filter(None, (part.strip() for part in spec.split(","))):
+        role, _, rest = item.partition("=")
+        model, _, effort = rest.partition("@")  # "@", not ":", because Ollama model names contain a colon
+        if role not in {"orchestrator", *EXPERTS} or not model:
+            raise ValueError(f"bad role entry {item!r}: use role=model[@effort] with a role from orchestrator, {', '.join(EXPERTS)}")
+        by_role[role] = backend(replace(cfg, model=model, effort=effort or cfg.effort))
+    return Roster(backend(cfg), by_role) if by_role else backend(cfg)  # the default serves roles not listed
+
+
+class Roster:
+    """One backend per agent role; a role that is not listed uses the default backend."""
+
+    def __init__(self, default, by_role: dict):
+        self.default, self.by_role = default, by_role
+
+    def pick(self, role: str):
+        return self.by_role.get(role, self.default)
+
+
+def for_role(llm, role: str):
+    """The backend an agent of this role talks to. A plain backend serves every role."""
+    return llm.pick(role) if isinstance(llm, Roster) else llm
 
 
 class AnthropicLLM:

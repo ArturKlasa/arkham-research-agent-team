@@ -28,7 +28,7 @@ from .agent import Tool, run_agent
 from .board import Board, Task
 from .events import Block, Bus, Halt
 from .experts import ANSWER, ASK, EXPERTS, READ, TEXT, obj
-from .llm import FatalError
+from .llm import FatalError, for_role
 from .memory import Memory
 from .rules import RULES, SUITE, violations
 from .tools import Workspace, make_tools
@@ -154,7 +154,7 @@ class Engine:
         task.meta["consulted"] = list(task.meta.get("consulted", [])) if task.result else []
         messages = [{"role": "user", "content": self.handoff(task)}]
         schema = ANSWER if task.kind == "adhoc" else expert.schema
-        return run_agent(self.llm, self.bus, self.cfg, expert.system, messages, self._tools(task, expert), schema, lambda payload: self.gate(task, payload))
+        return run_agent(for_role(self.llm, task.agent), self.bus, self.cfg, expert.system, messages, self._tools(task, expert), schema, lambda payload: self.gate(task, payload))
 
     def handoff(self, task: Task) -> str:
         """Everything the expert needs, and nothing else: assignment, upstream results, feedback, memory."""
