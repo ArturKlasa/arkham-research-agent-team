@@ -360,15 +360,21 @@ class Engine:
         trail, roles = self.bus.read(), {}
         for e in trail:
             if e["type"] == "llm":
-                calls, tin, tout = roles.get(e.get("agent", "?"), (0, 0, 0))
-                roles[e.get("agent", "?")] = (calls + 1, tin + e["usage"]["in"], tout + e["usage"]["out"])
+                calls, tin, tout, cached = roles.get(e.get("agent", "?"), (0, 0, 0, 0))
+                used = e["usage"]  # a trail written before `cached` was recorded has no such field
+                roles[e.get("agent", "?")] = (
+                    calls + 1,
+                    tin + used["in"],
+                    tout + used["out"],
+                    cached + used.get("cached", 0),
+                )
         count = lambda test: sum(1 for e in trail if test(e))  # noqa: E731
         return {
             "status": self.report()["status"],
             "seconds": round(sum(t.seconds for t in self.board.tasks.values()), 1),
             "roles": {
-                role: {"calls": c, "in": i, "out": o}
-                for role, (c, i, o) in sorted(roles.items(), key=lambda r: -r[1][0])
+                role: {"calls": c, "in": i, "out": o, "cached": cached}
+                for role, (c, i, o, cached) in sorted(roles.items(), key=lambda r: -r[1][0])
             },
             "task_retries": count(lambda e: e["type"] == "error" and e["where"] == "task" and e.get("will_retry")),
             "model_retries": count(lambda e: e["type"] == "llm_retry"),

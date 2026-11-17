@@ -58,7 +58,8 @@ class Reply:
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop: str = "end"  # end | tool_use | max_tokens | refusal
-    usage: dict = field(default_factory=lambda: {"in": 0, "out": 0})
+    # `in` counts every input token; `cached` is the part of it the provider read from its prompt cache
+    usage: dict = field(default_factory=lambda: {"in": 0, "out": 0, "cached": 0})
     native: object = None  # provider-specific assistant content, replayed verbatim on the next turn
 
     def as_message(self) -> dict:
@@ -209,12 +210,12 @@ class AnthropicLLM:
         if msg.stop_reason is None:  # the connection closed cleanly before message_stop: text or tool input may be cut
             raise TransientError("the stream ended before the reply was complete")
 
-        cached = (msg.usage.cache_read_input_tokens or 0) + (msg.usage.cache_creation_input_tokens or 0)
+        read, written = msg.usage.cache_read_input_tokens or 0, msg.usage.cache_creation_input_tokens or 0
         return Reply(
             text="".join(b.text for b in msg.content if b.type == "text"),
             tool_calls=[ToolCall(b.id, b.name, b.input) for b in msg.content if b.type == "tool_use"],
             stop={"tool_use": "tool_use", "max_tokens": "max_tokens", "refusal": "refusal"}.get(msg.stop_reason, "end"),
-            usage={"in": msg.usage.input_tokens + cached, "out": msg.usage.output_tokens},
+            usage={"in": msg.usage.input_tokens + read + written, "out": msg.usage.output_tokens, "cached": read},
             # Thinking blocks must go back unchanged, so the whole content list is replayed as-is.
             native=msg.content or [{"type": "text", "text": "(no output)"}],
         )
@@ -326,7 +327,9 @@ class PiLLM:
             tool_calls=[ToolCall(b["id"], b["name"], b.get("argumentsError") or b["arguments"]) for b in calls],
             stop={"toolUse": "tool_use", "length": "max_tokens"}.get(message["stopReason"], "end"),
             usage={
-                "in": usage["input"] + usage.get("cacheRead", 0) + usage.get("cacheWrite", 0), "out": usage["output"]
+                "in": usage["input"] + usage.get("cacheRead", 0) + usage.get("cacheWrite", 0),
+                "out": usage["output"],
+                "cached": usage.get("cacheRead", 0),
             },
             native=message,  # thinking blocks and signatures must go back unchanged
         )
@@ -403,6 +406,7 @@ class OpenAICompatLLM:
                         reply.usage = {
                             "in": chunk["usage"].get("prompt_tokens", 0),
                             "out": chunk["usage"].get("completion_tokens", 0),
+                            "cached": (chunk["usage"].get("prompt_tokens_details") or {}).get("cached_tokens", 0),
                         }
                     for choice in chunk.get("choices") or []:
                         delta = choice.get("delta") or {}

@@ -133,10 +133,13 @@ def summary_text(s: dict) -> str:
         f"■ run {s['status']} · {s['seconds']}s of task time · {calls} model calls · tests: {s['tests'] or 'not run'}"
     ]
     tokens = any(r["in"] or r["out"] for r in s["roles"].values())  # the scripted team reports none
-    lines += [
-        f"    {role:<12} {r['calls']:>3} calls" + (f"  {r['in']:>9,} in  {r['out']:>8,} out" if tokens else "")
-        for role, r in s["roles"].items()
-    ]
+    caching = any(r["cached"] for r in s["roles"].values())  # local models report none
+
+    def spent(r: dict) -> str:
+        share = f" ({r['cached'] * 100 // (r['in'] or 1):>2}% from cache)" if caching else ""
+        return f"  {r['in']:>9,} in{share}  {r['out']:>8,} out" if tokens else ""
+
+    lines += [f"    {role:<12} {r['calls']:>3} calls{spent(r)}" for role, r in s["roles"].items()]
     lines.append(
         f"    recoveries: {s['gate_rejections']} gate rejections · {s['tool_errors']} tool errors "
         f"· {s['task_retries']} task retries · {s['model_retries']} model-call retries · "

@@ -27,7 +27,7 @@ from harness.agent import AgentError, Tool, _call_tool, clip, fence, run_agent, 
 from harness.board import Board, Task
 from harness.config import Config
 from harness.demo import SPEC, ScriptedTeam
-from harness.events import Block, Halt, render
+from harness.events import Block, Halt, render, summary_text
 from harness.experts import EXPERTS
 from harness.llm import (
     AnthropicLLM,
@@ -416,6 +416,21 @@ class Pipeline(HarnessCase):
 
         engine.cfg.max_tokens = 0  # no cap
         self.assertEqual(engine.resume()["status"], "completed")
+
+    def test_the_summary_shows_how_much_of_the_input_came_from_the_prompt_cache(self):
+        class Cached(ScriptedTeam):
+            def chat(self, *args, **kwargs):
+                reply = super().chat(*args, **kwargs)
+                reply.usage = {"in": 1000, "out": 100, "cached": 750}
+                return reply
+
+        engine = self.team(llm=Cached(faults=False)).engine
+        engine.start(TASK)
+        summary = engine.summary()
+        self.assertEqual(summary["roles"]["planner"], {"calls": 1, "in": 1000, "out": 100, "cached": 750})
+        self.assertIn("1,000 in (75% from cache)", summary_text(summary))
+        uncached = {**summary, "roles": {role: {**r, "cached": 0} for role, r in summary["roles"].items()}}
+        self.assertNotIn("from cache", summary_text(uncached))  # a model that caches nothing: nothing is claimed
 
     def test_interrupted_run_resumes_without_redoing_finished_work(self):
         class Interrupted(ScriptedTeam):
@@ -1182,7 +1197,10 @@ class OpenAICompatible(HarnessCase):
                     }
                 ]
             },
-            {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 5}},
+            {
+                "choices": [],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 4}},
+            },
         ]
         seen = {}
 
@@ -1223,7 +1241,8 @@ class OpenAICompatible(HarnessCase):
         streamed = []
         reply = llm.chat("be brief", history, [tool], streamed.append)
         self.assertEqual(
-            (streamed, reply.text, reply.stop, reply.usage), (["Hel", "lo"], "Hello", "tool_use", {"in": 7, "out": 5})
+            (streamed, reply.text, reply.stop, reply.usage),
+            (["Hel", "lo"], "Hello", "tool_use", {"in": 7, "out": 5, "cached": 4}),
         )
         self.assertEqual(
             [(c.id, c.name, c.args) for c in reply.tool_calls], [("call_1", "read_file", {"path": "a.py"})]
@@ -1265,7 +1284,12 @@ class ClaudeBackend(HarnessCase):
                 "content": [],
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {"input_tokens": 10, "output_tokens": 1},
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 30,
+                    "cache_creation_input_tokens": 5,
+                },
             },
         },
         {
@@ -1343,7 +1367,8 @@ class ClaudeBackend(HarnessCase):
         streamed = []
         reply = self.llm.chat("sys", [{"role": "user", "content": "hi"}], [self.tool], streamed.append)
         self.assertEqual(
-            (streamed, reply.text, reply.stop, reply.usage), (["Hello"], "Hello", "tool_use", {"in": 10, "out": 15})
+            (streamed, reply.text, reply.stop, reply.usage),
+            (["Hello"], "Hello", "tool_use", {"in": 45, "out": 15, "cached": 30}),
         )
         self.assertEqual(
             [(c.id, c.name, c.args) for c in reply.tool_calls], [("toolu_1", "read_file", {"path": "a.py"})]
@@ -1424,7 +1449,7 @@ class PiBackend(HarnessCase):
         reply = llm.chat("be brief", [{"role": "user", "content": "hi"}], [tool], shown.append)
         self.assertEqual((shown, reply.text, reply.stop), (["Hello ", "there"], "Hello there", "tool_use"))
         self.assertEqual(reply.tool_calls, [ToolCall("c1", "read_file", {"path": "a.py"})])
-        self.assertEqual(reply.usage, {"in": 130, "out": 5})  # cached input counts as input
+        self.assertEqual(reply.usage, {"in": 130, "out": 5, "cached": 100})  # cached input counts as input
         request = self.sent()
         self.assertEqual(
             (request["provider"], request["model"], request["effort"]), ("anthropic", "claude-sonnet-5-5", "high")
