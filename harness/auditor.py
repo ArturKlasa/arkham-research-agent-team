@@ -23,7 +23,7 @@ import re
 from .agent import run_agent
 from .experts import EXPERTS, TEXT, arr, obj
 from .llm import for_role
-from .rules import SUITE, judged, violations
+from .rules import SUITE, judged, reaches_out, violations
 from .tools import make_tools, run_sandboxed
 
 
@@ -89,6 +89,7 @@ def judge(eng, task) -> list[dict]:
             f"# What that step was given\n{json.dumps(upstream, indent=1)}",
             eng.changes(task),
             f"# Output under audit\n{json.dumps(task.result, indent=1)}",
+            _outward(eng, task),
             "# Rules to judge\n" + "\n".join(f"- {r.id}: {r.text}" for r in rules),
             "Submit exactly one verdict per rule. For a failed rule, `evidence` quotes the defect and `fix` says what to change.",
         ]
@@ -104,6 +105,21 @@ def judge(eng, task) -> list[dict]:
     tools = make_tools(eng.ws, eng.cfg, consulted=[])
     result = run_agent(for_role(eng.llm, "auditor"), eng.bus, eng.cfg, auditor.system, [{"role": "user", "content": brief}], [tools[n] for n in auditor.tools], schema, complete)
     return result["verdicts"]
+
+
+def _outward(eng, task) -> str:
+    """For code: every line that reaches outside the program, found by the harness. Code a model wrote cannot hide one."""
+    if task.kind != "implement":
+        return ""
+    lines = []
+    for name in task.meta["item"]["files"]:
+        path = eng.ws.root / name
+        if name.endswith(".py") and path.is_file():
+            try:
+                lines += [f"- {name} {found}" for found in reaches_out(path.read_text(errors="replace"))]
+            except (SyntaxError, ValueError):
+                pass  # IMPL-FILES has already reported it
+    return "# Lines that reach outside the program (listed by the harness, not by the engineer)\n" + ("\n".join(lines) or "none")
 
 
 def _finding(rule: str, task: str, evidence: str, fix: str) -> dict:
