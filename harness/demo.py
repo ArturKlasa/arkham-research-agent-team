@@ -161,14 +161,16 @@ class ScriptedTeam:
             done = sum(t["status"] == "done" for t in report["tasks"])
             return Reply(text=f"Status: {report['status']}. {done}/{len(report['tasks'])} tasks done, {report['audit_cycles_used']} audit re-run round(s). Files: {', '.join(report['files']) or 'none'} in {report['workspace']}. Use /show to inspect them, or tell me what to change.")
         text = last["content"]
-        if text.lower().startswith("ask "):
-            return self.call("ask_expert", expert="researcher", question=text[4:])
+        if text.lower().startswith("ask ") or text.rstrip().endswith("?"):
+            return self.call("ask_expert", expert="researcher", question=text[4:] if text.lower().startswith("ask ") else text)
         if text.lower().startswith("change "):
             _, task_id, feedback = text.split(" ", 2)
             return self.call("request_changes", task_id=task_id, feedback=feedback)
         if text.lower() in ("resume", "approve", "status"):
             return self.call(text.lower())
-        return self.call("start_project", task=text)
+        reply = self.call("start_project", task=text)
+        reply.text = "Scripted team: whatever the request, it builds its one canned task (a user-lookup API over a mock database) to show every recovery path.\n"
+        return reply
 
     # --- the experts ---
 

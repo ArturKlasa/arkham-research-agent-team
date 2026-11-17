@@ -185,6 +185,8 @@ class Engine:
             parts.append("# Feedback you must address\n" + "\n".join(f"- {note}" for note in task.feedback))
         recalled = self._memory("recall", task.agent, task.meta.get("question") or project, self.dir.name) or []
         if recalled:
+            if lessons := [note[1 : note.index("]")] for note in recalled if note.startswith("[")]:
+                self.bus.emit("recall", role=task.agent, rules=lessons)
             parts.append("# Lessons and notes from earlier runs\n" + "\n".join(f"- {note}" for note in recalled))
         return "\n\n".join(filter(None, parts))
 
@@ -286,6 +288,7 @@ class Engine:
             "gate_rejections": count(lambda e: e["type"] == "gate" and not e["passed"]),
             "audit_cycles": self.board.meta.get("audit_cycles", 0),
             "lessons": count(lambda e: e["type"] == "lesson"),
+            "lessons_recalled": sum(len(e["rules"]) for e in trail if e["type"] == "recall"),
             "tests": None if not suites else ("pass" if suites[-1]["exit_code"] == 0 else f"fail (exit {suites[-1]['exit_code']})"),
         }
 

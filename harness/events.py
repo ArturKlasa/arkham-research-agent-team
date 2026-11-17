@@ -95,11 +95,13 @@ def render(e: dict) -> str | None:
         return f"✖ {task} failed: {e['error'][:300]}" + (" — will retry" if e.get("will_retry") else " — giving up")
     if kind == "audit":
         lines = [f"⚖ audit: {len(e['findings'])} finding(s)" if e["findings"] else "⚖ audit: all rules pass"]
-        return "\n".join(lines + [f"    ✖ [{f['rule']}] {f['task']}: {f['evidence'][:200]}" for f in e["findings"]])
+        return "\n".join(lines + [f"    ✖ [{f['rule']}] {f['task']}: {_brief(f['evidence'])}" for f in e["findings"]])
     if kind == "rerun":
         return f"↺ re-running {', '.join(e['tasks'])} (audit cycle {e['cycle']})"
     if kind == "lesson":
         return f"    ✎ lesson recorded for {e['role']}: [{e['rule']}]"
+    if kind == "recall":
+        return f"    ✎ {e['role']} starts with lessons from earlier runs: {', '.join(e['rules'])}"
     if kind == "run_done":
         return summary_text(e)
     if kind == "interrupted":
@@ -107,13 +109,21 @@ def render(e: dict) -> str | None:
     return None
 
 
+def _brief(evidence: str) -> str:
+    """One line of audit evidence: the first line, plus the failing tests when it is test output."""
+    first, *rest = evidence.splitlines() or [""]
+    failed = [line.split(" (")[0] for line in rest if line.endswith(("... FAIL", "... ERROR"))]
+    return (first + (" failing: " + ", ".join(failed) if failed else ""))[:200]
+
+
 def summary_text(s: dict) -> str:
     """The end-of-run block: what the session cost and how often each recovery path fired."""
     calls = sum(r["calls"] for r in s["roles"].values())
     lines = [f"■ run {s['status']} · {s['seconds']}s of task time · {calls} model calls · tests: {s['tests'] or 'not run'}"]
-    lines += [f"    {role:<12} {r['calls']:>3} calls  {r['in']:>9,} in  {r['out']:>8,} out" for role, r in s["roles"].items()]
+    tokens = any(r["in"] or r["out"] for r in s["roles"].values())  # the scripted team reports none
+    lines += [f"    {role:<12} {r['calls']:>3} calls" + (f"  {r['in']:>9,} in  {r['out']:>8,} out" if tokens else "") for role, r in s["roles"].items()]
     lines.append(
         f"    recoveries: {s['gate_rejections']} gate rejections · {s['tool_errors']} tool errors · {s['task_retries']} task retries · "
-        f"{s['model_retries']} model-call retries · {s['audit_cycles']} audit cycles · {s['lessons']} lessons recorded"
+        f"{s['model_retries']} model-call retries · {s['audit_cycles']} audit cycles · {s['lessons']} lessons recorded · {s['lessons_recalled']} lessons recalled into handoffs"
     )
     return "\n".join(lines)

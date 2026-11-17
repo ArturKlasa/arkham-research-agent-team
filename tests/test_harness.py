@@ -249,6 +249,7 @@ class MemoryAndHooks(HarnessCase):
 
         self.assertEqual([e for e in self.events(second, type="gate") if not e["passed"]], [])
         self.assertEqual((first.engine.report()["audit_cycles_used"], report["audit_cycles_used"]), (2, 0))
+        self.assertIn("PRD-IDS", self.events(second, type="recall", agent="product")[0]["rules"])
         handoff = second.engine.handoff(second.engine.board.tasks["prd"])
         self.assertIn("[PRD-IDS]", handoff)
 
