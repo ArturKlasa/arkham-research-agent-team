@@ -304,6 +304,22 @@ class Pipeline(HarnessCase):
         self.assertEqual(engine.resume()["status"], "completed")
         self.assertEqual(engine.board.tasks["prd"].runs, 2)
 
+    def test_a_session_stops_delegating_once_its_token_budget_is_spent(self):
+        class Metered(ScriptedTeam):
+            def chat(self, *args, **kwargs):
+                reply = super().chat(*args, **kwargs)
+                reply.usage = {"in": 900, "out": 100}
+                return reply
+
+        engine = self.team(llm=Metered(faults=False), max_tokens=1500).engine
+        tasks = {t["id"]: t for t in engine.start(TASK)["tasks"]}
+        self.assertEqual((tasks["research"]["status"], tasks["plan"]["status"], tasks["plan"]["runs"]), ("done", "failed", 1))
+        self.assertIn("token budget", tasks["plan"]["error"])
+        self.assertEqual(tasks["plan"]["tokens"], 0)  # refused before any model call
+
+        engine.cfg.max_tokens = 0  # no cap
+        self.assertEqual(engine.resume()["status"], "completed")
+
     def test_interrupted_run_resumes_without_redoing_finished_work(self):
         class Interrupted(ScriptedTeam):
             def architect(self, messages, tools):

@@ -23,6 +23,7 @@ class Config:
     max_audit_cycles: int = 2  # audit -> re-run rounds before reporting open findings
     llm_retries: int = 3  # retries of one LLM call on a transient error
     retry_base: float = 1.0  # seconds; backoff is retry_base * 2**n plus jitter
+    max_tokens: int = 5_000_000  # tokens the tasks of one session may spend, 0 for no cap (a full Claude build used about 0.9M)
     pause_after: str = ""  # step ids, e.g. "prd": the run stops there for the user's review and `resume` continues
 
     # Isolation

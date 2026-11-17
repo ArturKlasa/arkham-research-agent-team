@@ -134,6 +134,9 @@ class Engine:
         started = time.time()
         with self.bus.scope(task=task.id, agent=task.agent, attempt=task.attempts):
             try:
+                spent = sum(t.tokens for t in self.board.tasks.values())
+                if 0 < self.cfg.max_tokens <= spent:  # ponytail: checked between tasks, so one task can overshoot; check per model call if that matters
+                    raise Block(f"token budget spent ({spent} of {self.cfg.max_tokens}); raise HARNESS_MAX_TOKENS and resume")
                 self.bus.emit("task_start")  # hooks may veto
                 if task.kind == "audit":
                     findings = auditor.sweep(self)
