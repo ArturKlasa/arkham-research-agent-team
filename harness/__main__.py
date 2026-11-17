@@ -43,7 +43,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="harness", description="Research agent team")
     parser.add_argument("--provider", help="anthropic | openai (any OpenAI-compatible server, e.g. Ollama) | scripted (offline demo)")
     parser.add_argument("--model", help="one model for every agent (anthropic default: a model per role, see --roles)")
-    parser.add_argument("--roles", help="per-role models: role=model[@effort],... e.g. architect=claude-opus-5-5@high")
+    parser.add_argument("--roles", help="per-role models: role=[provider+]model[@effort],... e.g. architect=claude-opus-5-5@high,auditor=openai+qwen3:4b")
     parser.add_argument("--base-url", help="for --provider openai, e.g. http://localhost:11434/v1")
     parser.add_argument("--sandbox", help="auto | bwrap | docker | none")
     parser.add_argument("--sources", type=Path, help="directory of reference files the agents may read")
