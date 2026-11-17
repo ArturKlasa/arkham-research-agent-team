@@ -95,7 +95,7 @@ def render(e: dict) -> str | None:
         return f"✖ {task} failed: {e['error'][:300]}" + (" — will retry" if e.get("will_retry") else " — giving up")
     if kind == "audit":
         lines = [f"⚖ audit: {len(e['findings'])} finding(s)" if e["findings"] else "⚖ audit: all rules pass"]
-        return "\n".join(lines + [f"    ✖ [{f['rule']}] {f['task']}: {_brief(f['evidence'])}" for f in e["findings"]])
+        return "\n".join(lines + [f"    ✖ [{f['rule']}] {f['task']}: {_brief(f['evidence'])}\n      → {f['fix'][:200]}" for f in e["findings"]])
     if kind == "rerun":
         return f"↺ re-running {', '.join(e['tasks'])} (audit cycle {e['cycle']})"
     if kind == "lesson":

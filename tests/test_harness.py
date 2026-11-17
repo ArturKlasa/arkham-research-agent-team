@@ -656,7 +656,10 @@ class Gateway(HarnessCase):
             post("/chat", "wr\u00f6ng")
         self.assertEqual(denied.exception.code, 401)
 
+        midrun = []  # a slash command sent while the build holds the team is still answered
+        orch.engine.bus.on(lambda e: e.get("task") == "plan" and not midrun and midrun.append(post("/chat", "secret", b'{"message": "/status"}')), "task_start")
         frames = [json.loads(line[6:]) for line in post("/chat", "secret", json.dumps({"message": TASK}).encode()).split("\n\n") if line]
+        self.assertIn("plan ", json.loads(midrun[0][6:].split("\n\n")[0])["text"])
         self.assertIn("▶ research · researcher (attempt 1)", [f["text"] for f in frames if f["type"] == "event"])
         self.assertIn("Status: completed.", "".join(f["text"] for f in frames if f["type"] == "text"))
 

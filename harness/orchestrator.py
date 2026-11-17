@@ -33,7 +33,7 @@ Choosing a tool:
 - The run was interrupted, or a task failed for a reason that has since been fixed: resume.
 - The user accepts the result: approve.
 
-After a tool returns, report briefly and truthfully: what was built and where, what the audit found, what failed and why. Never claim more than the report shows. Then invite the user to inspect files or ask for changes."""
+After a tool returns, report briefly and truthfully: what was built and where, what the audit found, what failed and why. Never claim more than the report shows. `tests` in the report is the test suite as run by the harness itself in the sandbox, not a claim by the engineer. Then invite the user to inspect files or ask for changes."""
 
 HELP = """/status            task board (each task: state, runs, time, tokens) and the session summary
 /show [name]       list artifacts and files, or print one (e.g. /show artifacts/prd, /show api.py)

@@ -269,6 +269,11 @@ class Engine:
 
     # --- what the user sees ---------------------------------------------------------------------
 
+    def _tests(self) -> str | None:
+        """The last test-suite run, executed by the harness in the sandbox during the audit."""
+        suites = self.bus.read(type="suite")
+        return None if not suites else "pass" if suites[-1]["exit_code"] == 0 else f"fail (exit {suites[-1]['exit_code']})"
+
     def summary(self) -> dict:
         """Numbers for the whole session, counted from the trail and the board."""
         trail, roles = self.bus.read(), {}
@@ -277,7 +282,6 @@ class Engine:
                 calls, tin, tout = roles.get(e.get("agent", "?"), (0, 0, 0))
                 roles[e.get("agent", "?")] = (calls + 1, tin + e["usage"]["in"], tout + e["usage"]["out"])
         count = lambda test: sum(1 for e in trail if test(e))  # noqa: E731
-        suites = [e for e in trail if e["type"] == "suite"]
         return {
             "status": self.report()["status"],
             "seconds": round(sum(t.seconds for t in self.board.tasks.values()), 1),
@@ -289,7 +293,7 @@ class Engine:
             "audit_cycles": self.board.meta.get("audit_cycles", 0),
             "lessons": count(lambda e: e["type"] == "lesson"),
             "lessons_recalled": sum(len(e["rules"]) for e in trail if e["type"] == "recall"),
-            "tests": None if not suites else ("pass" if suites[-1]["exit_code"] == 0 else f"fail (exit {suites[-1]['exit_code']})"),
+            "tests": self._tests(),
         }
 
     def report(self) -> dict:
@@ -315,6 +319,7 @@ class Engine:
             ],
             "audit": audit.result if audit and audit.status == "done" else None,
             "audit_cycles_used": self.board.meta.get("audit_cycles", 0),
+            "tests": self._tests(),
             "files": self.ws.files(with_sources=False),
         }
 

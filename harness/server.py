@@ -151,7 +151,8 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
                 message = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))["message"]
             except (ValueError, KeyError, TypeError):
                 return self.reply(400, 'expected a JSON body like {"message": "..."}')
-            if not busy.acquire(blocking=False):
+            command = message.startswith("/")  # slash commands only read state: answer them even mid-run
+            if not command and not busy.acquire(blocking=False):
                 return self.reply(409, "the team is busy with another request")
             try:
                 stop.clear()
@@ -161,7 +162,8 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
                 self.end_headers()
                 self.stream(message)
             finally:
-                busy.release()
+                if not command:
+                    busy.release()
 
         def stream(self, message: str) -> None:
             def push(kind: str, text: str) -> None:
@@ -176,7 +178,8 @@ def build(orchestrator, host: str, port: int, token: str) -> ThreadingHTTPServer
                 if line:
                     push("event", line)
 
-            bus.on(progress)
+            if not message.startswith("/"):  # a command's reply must not pick up the running build's progress
+                bus.on(progress)
             try:
                 if message.startswith("/"):
                     push("text", orchestrator.command(message))
