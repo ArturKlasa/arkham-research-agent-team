@@ -257,6 +257,18 @@ class Pipeline(HarnessCase):
         tasks = {t["id"]: t for t in self.team(llm=Unauthorized(faults=False)).engine.start(TASK)["tasks"]}
         self.assertEqual((tasks["plan"]["status"], tasks["plan"]["runs"]), ("failed", 1))
 
+    def test_a_failed_orchestrator_turn_is_in_the_trail_with_its_traceback(self):
+        class Unauthorized(ScriptedTeam):
+            def orchestrator(self, messages, tools):
+                raise FatalError("invalid API key")
+
+        orch = self.team(llm=Unauthorized(faults=False))
+        self.assertRaises(FatalError, orch.send, "hello", lambda text: None)  # the terminal and the web UI still show it
+        listed = orch.command("/errors")
+        self.assertIn("agent=orchestrator", listed)
+        self.assertIn("Traceback (most recent call last)", listed)
+        self.assertIn("FatalError: invalid API key", listed)
+
     def test_every_error_is_listed_even_one_recorded_without_a_traceback(self):
         orch = self.team()
         orch.engine.bus.emit("error", where="memory", error="OSError: read-only file system", will_retry=False)

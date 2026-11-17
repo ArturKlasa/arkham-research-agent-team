@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from pathlib import Path
 
 from .agent import Tool, run_agent
 from .engine import Engine
-from .events import summary_text
+from .events import Halt, summary_text
 from .experts import TEXT, obj
 from .llm import for_role, make_llm
 from .memory import read_jsonl
@@ -99,7 +100,13 @@ class Orchestrator:
 
         try:
             with self.engine.bus.scope(agent="orchestrator"):
-                run_agent(for_role(self.llm, "orchestrator"), self.engine.bus, self.cfg, SYSTEM, self.messages, self.tools, on_text=relay)
+                try:
+                    run_agent(for_role(self.llm, "orchestrator"), self.engine.bus, self.cfg, SYSTEM, self.messages, self.tools, on_text=relay)
+                except Halt:  # the operator's stop is not an error
+                    raise
+                except Exception as exc:  # the caller shows one line; the trail keeps the traceback, as for an expert's task
+                    self.engine.bus.emit("error", where="orchestrator", error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc(), will_retry=False)
+                    raise
         finally:  # also when the turn is stopped or fails: the user saw the question and whatever reply there was
             self.chat_log.parent.mkdir(parents=True, exist_ok=True)
             with self.chat_log.open("a") as f:
