@@ -24,7 +24,7 @@ ollama pull gpt-oss:20b
 Then type what you want built. Other entry points and options:
 
 ```bash
-.venv/bin/python -m harness --serve                       # web UI + HTTP gateway on http://localhost:8765
+.venv/bin/python -m harness --serve                       # web UI (chat + live task board) and HTTP gateway on :8765
 .venv/bin/python -m harness --serve --host 0.0.0.0        # reachable from other machines (token required)
 .venv/bin/python -m harness --sources ./docs              # give the agents reference files to research
 .venv/bin/python -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
@@ -222,7 +222,7 @@ runs/<session>/workspace/      the solution that was built
 | Auto-memory | `memory.py` | Written and recalled automatically. Past research briefs and user change requests are retrieved by relevance to the new task and added to the handoff. |
 | Self-improvement | `memory.py`, `engine.py` | Every rule an agent role violates becomes a standing lesson for that role, with a hit counter, shown to it in every later session. The tests show the mechanism with the scripted team, which is written to avoid a mistake once its lesson is in the handoff: a second session needs zero gate rejections and zero audit re-runs where the first needed two of each. The effect on a real model has not been measured. |
 | Hooks | `events.py`, `examples/hooks.py` | Any function can subscribe to events. Raising `Block` from a `pre_tool` or `task_start` hook vetoes the action; hooks receive the whole tool arguments. The example enforces a token budget and a command deny-list. |
-| Gateway control, remote access | `server.py` | Token-protected HTTP API with server-sent events and a web UI: chat, status, and a stop button (itself a hook: it pauses the run before the next task, and `resume` continues it). |
+| Gateway control, remote access | `server.py` | Token-protected HTTP API with server-sent events and a web UI: chat, a live task board (retries and audit re-opens show as they happen), and a stop button (itself a hook: it pauses the run before the next task, and `resume` continues it). |
 | Open-source and local models | `llm.py` | Any OpenAI-compatible endpoint, standard library only: Ollama, vLLM, LM Studio, OpenRouter. |
 | Security harness | `tools.py` | Generated code runs in bubblewrap or Docker: no network, no home directory, an empty environment (so no API keys), the workspace as the only writable path. File tools cannot leave the workspace (`..`, absolute paths and symlinks are resolved first). Engineers can change only the files of their own work item: the write tool refuses anything else, and whatever a command changes outside the work item is put back when the command ends. Web fetches refuse non-public addresses, including through redirects. Every agent is told to treat tool output as data, never as instructions; that is a prompt instruction, not an enforced control. |
 
