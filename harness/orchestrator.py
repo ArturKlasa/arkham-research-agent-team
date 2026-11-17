@@ -17,6 +17,7 @@ from .engine import Engine
 from .events import summary_text
 from .experts import TEXT, obj
 from .llm import for_role, make_llm
+from .memory import read_jsonl
 from .tools import urls
 
 EXPERTS_TO_ASK = ["researcher", "planner", "product", "architect", "engineer"]
@@ -51,7 +52,12 @@ class Orchestrator:
         self.session = session or time.strftime("%Y%m%d-%H%M%S")
         self.llm = llm or make_llm(cfg)
         self.engine = Engine(cfg, self.llm, Path(cfg.runs) / self.session)
+        # The chat is kept on disk as what was said, one turn per line, so a reopened session continues the conversation.
+        # Tool calls are not kept: the board, artifacts and trail hold their effect, and status and show read them back.
+        self.chat_log = self.engine.dir / "chat.jsonl"
         self.messages: list[dict] = []
+        for turn in read_jsonl(self.chat_log):
+            self.messages += [{"role": "user", "content": turn["user"]}, {"role": "assistant", "content": turn["reply"]}]
         e = self.engine
         self.tools = [
             Tool("start_project", "Run the full pipeline for a new task. Returns the final report.", obj(task=TEXT), lambda a: e.start(a["task"])),
@@ -85,8 +91,19 @@ class Orchestrator:
             self.engine.board.save()
         self.engine.said = text
         self.messages.append({"role": "user", "content": text})
-        with self.engine.bus.scope(agent="orchestrator"):
-            run_agent(for_role(self.llm, "orchestrator"), self.engine.bus, self.cfg, SYSTEM, self.messages, self.tools, on_text=on_text)
+        shown = []
+
+        def relay(chunk):
+            shown.append(chunk)
+            on_text(chunk)
+
+        try:
+            with self.engine.bus.scope(agent="orchestrator"):
+                run_agent(for_role(self.llm, "orchestrator"), self.engine.bus, self.cfg, SYSTEM, self.messages, self.tools, on_text=relay)
+        finally:  # also when the turn is stopped or fails: the user saw the question and whatever reply there was
+            self.chat_log.parent.mkdir(parents=True, exist_ok=True)
+            with self.chat_log.open("a") as f:
+                f.write(json.dumps({"user": text, "reply": "".join(shown) or "(no reply)"}) + "\n")
 
     def command(self, line: str) -> str:
         """Slash commands: read-only views that do not involve the model."""

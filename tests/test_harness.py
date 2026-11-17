@@ -458,6 +458,14 @@ class Boundaries(HarnessCase):
         self.assertEqual(shown, ["try1", "\n[connection lost; the reply starts again]\n", "try2"])
         self.assertEqual([e["delay"] for e in bus.read(type="llm_retry")], [0.2])
 
+    def test_a_reopened_session_continues_the_conversation(self):
+        first = self.team(faults=False)
+        first.send("How many penguins are in Madagascar?", lambda text: None)
+        again = self.team(faults=False).messages  # same session id, a fresh process
+        self.assertEqual([m["role"] for m in again], ["user", "assistant"])
+        self.assertEqual(again[0]["content"], "How many penguins are in Madagascar?")
+        self.assertTrue(again[1]["content"])
+
     def test_a_torn_line_in_memory_or_trail_does_not_stop_a_session(self):
         orch = self.team(faults=False)
         orch.engine.memory.lesson("product", "PRD-IDS", "ids are unique", "s0")
