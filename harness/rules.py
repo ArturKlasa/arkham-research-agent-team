@@ -113,7 +113,7 @@ def _placeholders(source: str) -> list[str]:
     return found
 
 
-OUTWARD_MODULES = {"socket", "subprocess", "urllib", "http", "requests", "httpx", "ftplib", "smtplib", "ctypes", "multiprocessing"}
+OUTWARD_MODULES = {"socket", "subprocess", "urllib", "http", "requests", "httpx", "ftplib", "smtplib", "ctypes", "multiprocessing", "importlib", "pty", "ssl", "asyncio", "webbrowser", "pickle", "marshal"}
 OUTWARD_CALLS = {"eval", "exec", "compile", "__import__", "os.system", "os.popen", "os.getenv", "os.putenv"}
 
 
@@ -133,9 +133,11 @@ def reaches_out(source: str) -> list[str]:
             found.append(f"line {node.lineno}: {ast.unparse(node.func)}()")
         elif isinstance(node, ast.Attribute) and ast.unparse(node) in ("os.environ", "os.environb"):
             found.append(f"line {node.lineno}: {ast.unparse(node)}")
-        elif isinstance(node, ast.Attribute) and node.attr.startswith("exec") and ast.unparse(node.value) == "os":
+        elif isinstance(node, ast.Attribute) and node.attr.startswith(("exec", "spawn", "posix_spawn")) and ast.unparse(node.value) == "os":
             found.append(f"line {node.lineno}: os.{node.attr}()")
-    return sorted(set(found), key=lambda line: int(line.split()[1].rstrip(":")))
+        elif isinstance(node, ast.Call) and ast.unparse(node.func) == "getattr" and len(node.args) > 1 and not isinstance(node.args[1], ast.Constant):
+            found.append(f"line {node.lineno}: getattr() with a computed name")  # getattr(builtins, "ev" + "al") hides a call
+    return sorted(set(found), key=lambda line: (int(line.split()[1].rstrip(":")), line))  # same line: a stable order
 
 
 RULES = [

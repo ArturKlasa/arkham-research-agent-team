@@ -551,6 +551,8 @@ class Injection(HarnessCase):
             "print('eval() is fine in a string')\nresult = eval(input())\nos.execv('/bin/sh', [])\n"
         )
         self.assertEqual(reaches_out(code), ["line 2: from urllib.request import urlopen", "line 3: os.environ", "line 5: eval()", "line 6: os.execv()"])
+        hidden = "import importlib, socket\nrun = getattr(builtins, 'ev' + 'al')\nos.posix_spawn('/bin/sh', [], {})\nname = getattr(user, 'name')\nos.getenv('HOME')\nexec(code)\n"
+        self.assertEqual(reaches_out(hidden), ["line 1: import importlib", "line 1: import socket", "line 2: getattr() with a computed name", "line 3: os.posix_spawn()", "line 5: os.getenv()", "line 6: exec()"])
         eng = self.team().engine
         (eng.ws.root / "app.py").write_text(code)
         (eng.ws.root / "broken.py").write_text("def (")

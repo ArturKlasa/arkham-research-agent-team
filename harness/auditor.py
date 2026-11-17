@@ -108,7 +108,7 @@ def judge(eng, task) -> list[dict]:
 
 
 def _outward(eng, task) -> str:
-    """For code: every line that reaches outside the program, found by the harness. Code a model wrote cannot hide one."""
+    """For code: every line that reaches outside the program, found by the harness. A comment cannot hide one; the list covers the usual routes (imports, known calls, computed names), not every trick."""
     if task.kind != "implement":
         return ""
     lines = []
