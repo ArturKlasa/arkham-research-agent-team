@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from harness import auditor
-from harness.agent import AgentError, Tool, _call_tool, clip, fence, schema_errors
+from harness.agent import AgentError, Tool, _call_tool, clip, fence, run_agent, schema_errors
 from harness.board import Board, Task
 from harness.config import Config
 from harness.demo import SPEC, ScriptedTeam
@@ -28,7 +28,7 @@ from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, Reply, Roster
 from harness.orchestrator import Orchestrator
 from harness.server import build
 from harness.memory import Memory
-from harness.rules import _buildable, _file_ownership, _files_written, _placeholders, reaches_out
+from harness.rules import _buildable, _file_ownership, _files_written, _placeholders, _traceable, reaches_out
 from harness.tools import Workspace, _CheckedRedirects, check_public, detect_sandbox, _restore, _snapshot, make_tools, run_sandboxed
 
 try:
@@ -213,6 +213,14 @@ class Pipeline(HarnessCase):
             engine.board.add(Task("spec", "spec", "architect", status="done", result={"test_command": command}))
             self.assertEqual([f["task"] for f in auditor.run_suite(engine)], blamed, command)
 
+    def test_a_fatal_model_error_is_escalated_without_retrying(self):
+        class Unauthorized(ScriptedTeam):
+            def planner(self, messages, tools):
+                raise FatalError("invalid API key")
+
+        tasks = {t["id"]: t for t in self.team(llm=Unauthorized(faults=False)).engine.start(TASK)["tasks"]}
+        self.assertEqual((tasks["plan"]["status"], tasks["plan"]["runs"]), ("failed", 1))
+
     def test_every_error_is_listed_even_one_recorded_without_a_traceback(self):
         orch = self.team()
         orch.engine.bus.emit("error", where="memory", error="OSError: read-only file system", will_retry=False)
@@ -360,6 +368,43 @@ class Boundaries(HarnessCase):
         self.assertEqual(_buildable(spec("W12"), None, None), [])
         for odd in ("api/core", "../W1", "W1 core", "1"):
             self.assertTrue(_buildable(spec(odd), None, None), odd)
+
+    def test_spec_rules_catch_cycles_unknown_dependencies_shared_files_and_untraced_requirements(self):
+        item = lambda i, deps=(), files=("a.py", "test_a.py"), covers=("R1",): {"id": i, "depends_on": list(deps), "files": list(files), "covers": list(covers)}
+        spec = lambda *items: {"work_items": list(items)}
+        self.assertEqual(_buildable(spec(item("W1"), item("W2", ["W1"], ["b.py"])), None, None), [])
+        self.assertEqual(_buildable(spec(item("W1", ["W2"]), item("W2", ["W1"])), None, None), ["dependency cycle among work items ['W1', 'W2']"])
+        self.assertEqual(_buildable(spec(item("W1", ["W9"])), None, None), ["W1 depends on unknown work item 'W9'"])
+        self.assertEqual(_file_ownership(spec(item("W1"), item("W2", files=["a.py"])), None, None), ["file 'a.py' is owned by more than one work item"])
+        self.assertEqual(_file_ownership(spec(item("W1", files=["a.py"])), None, None), ["no work item owns a test file"])
+        eng = self.team().engine
+        eng.board.add(Task("prd", "prd", "product", result={"requirements": [{"id": "R1"}, {"id": "R2"}]}))
+        self.assertEqual(_traceable(spec(item("W1", covers=["R1", "R9"])), None, eng), ["requirement R2 is not covered by any work item", "work items cover R9, which is not a requirement in the PRD"])
+
+    def test_an_engineer_can_write_only_its_own_files(self):
+        ws = Workspace(self.tmp / "ws")
+        tools = make_tools(ws, Config(sandbox=SANDBOX), consulted=[], writable={"mine.py"})
+        tools["write_file"].fn({"path": "mine.py", "content": "x"})
+        self.assertRaises(PermissionError, tools["write_file"].fn, {"path": "other.py", "content": "x"})
+        self.assertEqual(ws.files(), ["mine.py"])
+
+    def test_the_agent_loop_stops_on_a_refusal_never_runs_a_cut_off_call_and_gives_up_on_an_idle_agent(self):
+        bus, cfg, ran, submit = self.team().engine.bus, Config(), [], {"type": "object"}
+        tool = Tool("write_file", "", {"type": "object"}, lambda args: ran.append(args) or "ok")
+
+        class Model:  # plays its replies in order, then repeats the last one
+            def __init__(self, *replies):
+                self.replies = list(replies)
+
+            def chat(self, system, messages, tools, on_text=None):
+                return self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+
+        self.assertRaises(FatalError, run_agent, Model(Reply(stop="refusal")), bus, cfg, "", [], [tool], submit)
+        cut = Reply(tool_calls=[ToolCall("c1", "write_file", {"path": "a.py"})], stop="max_tokens")  # its JSON parses, but it may be truncated
+        messages = []
+        self.assertEqual(run_agent(Model(cut, Reply(tool_calls=[ToolCall("c2", "submit", {})], stop="tool_use")), bus, cfg, "", messages, [tool], submit), {})
+        self.assertEqual((ran, messages[1]["is_error"]), ([], True))  # never run; the model is told to retry in smaller pieces
+        self.assertRaises(AgentError, run_agent, Model(Reply(text="Let me think.")), bus, cfg, "", [], [tool], submit)
 
     def test_the_file_check_accepts_an_empty_package_marker_and_reports_what_it_cannot_parse(self):
         eng = self.team().engine
