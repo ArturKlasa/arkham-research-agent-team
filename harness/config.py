@@ -10,8 +10,8 @@ from pathlib import Path
 @dataclass
 class Config:
     # LLM servicing
-    provider: str = "anthropic"  # anthropic | openai (any OpenAI-compatible server, e.g. Ollama) | scripted
-    model: str = ""  # one model for every role; anthropic defaults to llm.CLAUDE_ROLES; required for provider=openai
+    provider: str = "anthropic"  # anthropic | openai (any OpenAI-compatible server, e.g. Ollama) | pi (pi-ai, needs Node) | scripted
+    model: str = ""  # one model for every role; anthropic and pi default to llm.CLAUDE_ROLES; required for provider=openai
     effort: str = "medium"  # anthropic only: low | medium | high | xhigh | max
     base_url: str = "http://localhost:11434/v1"  # provider=openai; the default is a local Ollama
     roles: str = ""  # per-role models, "architect=claude-opus-5-5@high,auditor=..."; see llm.CLAUDE_ROLES

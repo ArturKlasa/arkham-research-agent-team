@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -25,7 +26,7 @@ from harness.config import Config
 from harness.demo import SPEC, ScriptedTeam
 from harness.events import Block, Halt, render
 from harness.experts import EXPERTS
-from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, Reply, Roster, ToolCall, TransientError, chat, for_role, make_llm
+from harness.llm import AnthropicLLM, FatalError, OpenAICompatLLM, PiLLM, Reply, Roster, ToolCall, TransientError, chat, for_role, make_llm
 from harness.orchestrator import Orchestrator
 from harness.server import build
 from harness.memory import Memory
@@ -986,6 +987,86 @@ class ClaudeBackend(HarnessCase):
 
 
 @unittest.skipUnless(importlib.util.find_spec("anthropic"), "anthropic SDK not installed")
+class PiBackend(HarnessCase):
+    """The pi-ai backend against a fake bridge: what the harness sends to pi, and how it reads what comes back."""
+
+    MESSAGE = {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "the user wants a file", "thinkingSignature": "sig"},
+            {"type": "text", "text": "Hello there"},
+            {"type": "toolCall", "id": "c1", "name": "read_file", "arguments": {"path": "a.py"}},
+        ],
+        "stopReason": "toolUse",
+        "usage": {"input": 10, "output": 5, "cacheRead": 100, "cacheWrite": 20},
+    }
+
+    def pi(self, *lines, code=0) -> PiLLM:
+        """A backend whose bridge records the request and prints `lines` (dicts as JSON, strings as they are)."""
+        script, printed = self.tmp / "bridge.py", "\n".join(line if isinstance(line, str) else json.dumps(line) for line in lines)
+        script.write_text(f"import sys, pathlib\npathlib.Path({str(self.tmp / 'request.json')!r}).write_text(sys.stdin.read())\nprint({printed!r})\nsys.exit({code})\n")
+        llm = PiLLM(Config(provider="pi", model="anthropic/claude-sonnet-5-5", effort="high"))
+        llm.BRIDGE = [sys.executable, str(script)]
+        return llm
+
+    def sent(self) -> dict:
+        return json.loads((self.tmp / "request.json").read_text())
+
+    def failed(self, error: str) -> dict:
+        return {"message": {"role": "assistant", "content": [], "stopReason": "error", "errorMessage": error, "usage": {"input": 0, "output": 0}}}
+
+    def test_streams_text_returns_tool_calls_unrun_and_replays_the_turn_as_pi_gave_it(self):
+        llm, shown = self.pi({"text": "Hello "}, {"text": "there"}, {"message": self.MESSAGE}), []
+        tool = Tool("read_file", "Read a file", {"type": "object"})
+        reply = llm.chat("be brief", [{"role": "user", "content": "hi"}], [tool], shown.append)
+        self.assertEqual((shown, reply.text, reply.stop), (["Hello ", "there"], "Hello there", "tool_use"))
+        self.assertEqual(reply.tool_calls, [ToolCall("c1", "read_file", {"path": "a.py"})])
+        self.assertEqual(reply.usage, {"in": 130, "out": 5})  # cached input counts as input
+        request = self.sent()
+        self.assertEqual((request["provider"], request["model"], request["effort"]), ("anthropic", "claude-sonnet-5-5", "high"))
+        self.assertEqual(request["context"]["systemPrompt"], "be brief")
+        self.assertEqual(request["context"]["tools"], [{"name": "read_file", "description": "Read a file", "parameters": {"type": "object"}}])
+
+        history = [
+            {"role": "assistant", "content": "an answer from before the session was reopened"},
+            {"role": "user", "content": "hi"},
+            reply.as_message(),
+            {"role": "tool", "id": "c1", "content": "print(1)", "is_error": False},
+        ]
+        llm.chat("be brief", history, [tool])
+        messages = self.sent()["context"]["messages"]
+        self.assertEqual(messages[0], {"role": "assistant", "content": [{"type": "text", "text": "an answer from before the session was reopened"}]})
+        self.assertEqual(messages[2], self.MESSAGE)  # thinking and its signature go back unchanged
+        self.assertEqual(messages[3], {"role": "toolResult", "toolCallId": "c1", "toolName": "read_file", "content": [{"type": "text", "text": "print(1)"}], "isError": False})
+
+    def test_failures_are_classified_for_the_retry_logic(self):
+        chat = lambda llm: llm.chat("s", [{"role": "user", "content": "hi"}], [])  # noqa: E731
+        self.assertRaises(TransientError, chat, self.pi(self.failed("529 overloaded_error: Overloaded")))
+        self.assertRaises(TransientError, chat, self.pi(self.failed("fetch failed: ECONNRESET")))
+        self.assertRaises(FatalError, chat, self.pi(self.failed("401 authentication_error: invalid x-api-key")))
+        self.assertRaises(FatalError, chat, self.pi({"error": "pi has no model anthropic/nope; known for anthropic: claude-opus-5-5"}, code=1))
+        self.assertRaises(TransientError, chat, self.pi("", code=1))  # the bridge died without a word
+        self.assertRaisesRegex(FatalError, "npm install --prefix pi", chat, self.pi("Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@earendil-works/pi-ai'", code=1))
+        missing = self.pi()
+        missing.BRIDGE = [str(self.tmp / "no-node-here")]
+        self.assertRaisesRegex(FatalError, "cannot start the pi bridge", chat, missing)
+
+        refused = {"message": {**self.failed("The model refused to complete the request")["message"], "rawStopReason": "refusal"}}
+        self.assertEqual(chat(self.pi(refused)).stop, "refusal")
+        cut = {**self.MESSAGE, "stopReason": "length", "content": [{"type": "toolCall", "id": "c1", "name": "write_file", "arguments": {}, "argumentsError": 'not a JSON object: {"path": "a'}]}
+        reply = chat(self.pi({"message": cut}))
+        self.assertEqual(reply.stop, "max_tokens")
+        self.assertTrue(schema_errors(reply.tool_calls[0].args, {"type": "object"}))  # the agent loop rejects it instead of running it with {}
+
+    def test_pi_serves_the_same_line_up_and_a_bare_model_name_is_a_claude_model(self):
+        llm = make_llm(Config(provider="pi"))
+        architect, researcher = for_role(llm, "architect"), for_role(llm, "researcher")
+        self.assertEqual((type(architect), architect.provider, architect.model, architect.effort), (PiLLM, "anthropic", "claude-opus-5-5", "high"))
+        self.assertEqual((researcher.provider, researcher.model), ("anthropic", "claude-sonnet-5-5"))
+        other = make_llm(Config(provider="pi", model="openrouter/qwen/qwen3-coder"))
+        self.assertEqual((other.provider, other.model), ("openrouter", "qwen/qwen3-coder"))
+
+
 class ClaudeLineUp(unittest.TestCase):
     def test_claude_uses_a_model_per_role_unless_one_model_is_chosen(self):
         llm = make_llm(Config())

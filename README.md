@@ -19,6 +19,10 @@ ollama pull gpt-oss:20b
 
 # 3. No model at all: a scripted team that makes every kind of mistake on purpose (until memory holds its lessons, see below)
 .venv/bin/python -m harness --provider scripted
+
+# 4. The Claude line-up again, with every model call served by pi-ai, the model layer of the pi agent toolkit (Node 22.19+)
+npm install --prefix pi
+.venv/bin/python -m harness --provider pi                 # or any model in pi's catalogue: --model <provider>/<model>
 ```
 
 Then type what you want built. Other entry points and options:
@@ -30,10 +34,10 @@ Then type what you want built. Other entry points and options:
 .venv/bin/python -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
 .venv/bin/python -m harness --hooks examples/hooks.py     # load policy hooks
 .venv/bin/python -m harness --pause-after prd             # stop after the PRD for your review; `resume` (or a change request) continues
-.venv/bin/python -m unittest discover -s tests -v         # 76 tests, offline, about 9 seconds
+.venv/bin/python -m unittest discover -s tests -v         # 79 tests, offline, about 9 seconds
 ```
 
-Requirements: Linux or macOS (the memory file is locked with `fcntl`, so Windows needs WSL), Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
+Requirements: Linux or macOS (the memory file is locked with `fcntl`, so Windows needs WSL), Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Node is needed only for `--provider pi`) (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
 
 ### Models
 
@@ -61,6 +65,8 @@ A role can name its own provider, so the auditor can come from a different model
 .venv/bin/python -m harness --roles auditor=openai+gpt-oss:120b                    # Claude team, open-weight auditor on Ollama
 .venv/bin/python -m harness --base-url https://openrouter.ai/api/v1 --roles auditor=openai+openai/gpt-oss-120b
 ```
+
+`--provider pi` sends the model calls through [pi-ai](https://github.com/earendil-works/pi), the model layer of the pi agent toolkit, in a small Node bridge (`pi/bridge.mjs`, one process per call). With no `--model` it serves the same Claude line-up; `--model <provider>/<model>` picks any model in pi's catalogue, and a role entry can use it too (`--roles auditor=pi+<provider>/<model>`). Only the model connection is pi's: pi-ai returns tool calls without running them, so the agent loop, the tools, the hooks and the sandbox stay the harness's own. pi reports a failed call as text rather than as a status, so the retry logic classifies it by its wording: what is clearly permanent (bad key, unknown model, invalid request) stops the task, anything else is retried.
 
 The model behind every call is recorded in the trail (`llm` events).
 
@@ -147,7 +153,7 @@ Modules, in reading order:
 | `harness/tools.py` | file, web and command tools; workspace confinement; sandbox |
 | `harness/events.py` | event bus: trail, tracebacks, live progress, hooks |
 | `harness/memory.py` | lessons and notes across sessions |
-| `harness/llm.py` | the model connection: Claude, OpenAI-compatible, retry and error classification |
+| `harness/llm.py` | the model connection: Claude, OpenAI-compatible, pi-ai (through `pi/bridge.mjs`), retry and error classification |
 | `harness/server.py` | HTTP gateway and web UI |
 | `harness/demo.py` | the scripted team used by `--provider scripted` and the tests |
 
@@ -241,9 +247,10 @@ Every setting in `harness/config.py` can be set as `HARNESS_<NAME>` (for example
 | Hooks | `events.py`, `examples/hooks.py` | Any function can subscribe to events. Raising `Block` from a `pre_tool` or `task_start` hook vetoes the action; hooks receive the whole tool arguments. The example enforces a token budget and a command deny-list. |
 | Gateway control, remote access | `server.py` | Token-protected HTTP API with server-sent events and a web UI: chat, a live task board (retries and audit re-opens show as they happen), and a stop button (itself a hook: it pauses the run before the next task, and `resume` continues it). |
 | Open-source and local models | `llm.py` | Any OpenAI-compatible endpoint, standard library only: Ollama, vLLM, LM Studio, OpenRouter. |
+| Lower-level harness: pi | `llm.py`, `pi/bridge.mjs` | Model calls served by pi-ai, the model layer of the pi agent toolkit: streaming, tool calls returned unrun, thinking replayed unchanged, token usage. Opt-in (`--provider pi`); the default path needs no Node. |
 | Security harness | `tools.py` | Generated code runs in bubblewrap or Docker: no network, no home directory, an empty environment (so no API keys), the workspace as the only writable path. File tools cannot leave the workspace (`..`, absolute paths and symlinks are resolved first). Engineers can change only the files of their own work item: the write tool refuses anything else, and whatever a command changes outside the work item is put back when the command ends. Web fetches refuse non-public addresses, including through redirects. Prompt injection: see below. |
 
-Not done: running on a lower-level third-party harness (pi, hermes, openclaw). The harness here is its own low-level implementation.
+Lower-level harness (pi, hermes, openclaw): done in part. `--provider pi` puts the harness on pi's model layer (pi-ai) for LLM servicing, which is the part the brief leaves to tools. pi's agent loop is not used, and neither are Hermes or OpenClaw: all three run their own loop and their own tools, so delegating to them would hand over tool execution and with it the hooks, the write restrictions, the fencing of untrusted text and the sandbox, which this project set out to write by hand.
 
 ### Prompt injection
 
@@ -305,4 +312,4 @@ The lesson fixed the mistake it was recorded for: in session 2 the researcher ci
 
 ## Tests
 
-`.venv/bin/python -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, an auditor finding blamed on an upstream step, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, a change request staying in force through later re-runs and reaching the auditor, a suite that runs no tests, skips every test or leaves a test file out, a test command that cannot run (or starts and stops before any test), a fatal model error escalated without retry, a failed orchestrator turn recorded with its traceback, the spec rules (dependency cycles, unknown dependencies, shared files, untraced requirements), the agent loop (refusal, a cut-off tool call never run, an idle agent), transitive blame, pause and resume (a stop that interrupts a nested question, and one that a slash command must not cancel), `/errors` for every recorded error, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, prompt injection (fenced tool output, the URL allow-list including the orchestrator and workspace paths, a poisoned reference file, a URL alphabet planted in a reference file, a change request the user never made, audit-gated memory, the outward-call listing), peer delegation, a hook veto, workspace confinement, file ownership for the write tool and under shell commands (including a directory swapped for a symlink), unreadable or unwritable memory, paged file reads (including a file that is one long line), the placeholder check, work-item id format, empty package markers and unparsable files, settings precedence, per-role model routing (including a role on another provider), a reopened session continuing the conversation, a research revision keeping the sources it already opened, concurrent memory writes, the address guard, sandbox isolation, the Docker sandbox's arguments and a command that never ends, file search, HTML-to-text and search-result parsing, the slash commands, a review pause after the PRD, the session token budget, both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream and a stream that is cut or closed early, `Retry-After`, and a retried stream marked as restarted), and the HTTP gateway.
+`.venv/bin/python -m unittest discover -s tests -v` runs offline. The scripted team makes one mistake of every kind, so the tests exercise every recovery path: gate rejection and in-conversation repair, crash and retry with traceback, transient-error backoff, audit re-runs from a failing test suite and from an auditor finding, an auditor finding blamed on an upstream step, incremental re-audit, exhausted re-run budget, escalation and resume, change-request cascade, a change request staying in force through later re-runs and reaching the auditor, a suite that runs no tests, skips every test or leaves a test file out, a test command that cannot run (or starts and stops before any test), a fatal model error escalated without retry, a failed orchestrator turn recorded with its traceback, the spec rules (dependency cycles, unknown dependencies, shared files, untraced requirements), the agent loop (refusal, a cut-off tool call never run, an idle agent), transitive blame, pause and resume (a stop that interrupts a nested question, and one that a slash command must not cancel), `/errors` for every recorded error, interruption and resume from disk (including a Ctrl-C while audit findings are being applied), lessons carried to a second session, grounded question answering, prompt injection (fenced tool output, the URL allow-list including the orchestrator and workspace paths, a poisoned reference file, a URL alphabet planted in a reference file, a change request the user never made, audit-gated memory, the outward-call listing), peer delegation, a hook veto, workspace confinement, file ownership for the write tool and under shell commands (including a directory swapped for a symlink), unreadable or unwritable memory, paged file reads (including a file that is one long line), the placeholder check, work-item id format, empty package markers and unparsable files, settings precedence, per-role model routing (including a role on another provider), a reopened session continuing the conversation, a research revision keeping the sources it already opened, concurrent memory writes, the address guard, sandbox isolation, the Docker sandbox's arguments and a command that never ends, file search, HTML-to-text and search-result parsing, the slash commands, a review pause after the PRD, the session token budget, the pi backend against a fake bridge (streaming, tool calls returned unrun, the turn replayed as pi gave it, failures classified, a missing install), both model backends against local fake servers (streaming, tool-call assembly, replayed history, error classification including an overload inside an open stream and a stream that is cut or closed early, `Retry-After`, and a retried stream marked as restarted), and the HTTP gateway.

@@ -41,7 +41,7 @@ def load_hooks(path: str, bus) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="harness", description="Research agent team")
-    parser.add_argument("--provider", help="anthropic | openai (any OpenAI-compatible server, e.g. Ollama) | scripted (offline demo)")
+    parser.add_argument("--provider", help="anthropic | openai (any OpenAI-compatible server, e.g. Ollama) | pi (models served by pi-ai) | scripted (offline demo)")
     parser.add_argument("--model", help="one model for every agent (anthropic default: a model per role, see --roles)")
     parser.add_argument("--roles", help="per-role models: role=[provider+]model[@effort],... e.g. architect=claude-opus-5-5@high,auditor=openai+qwen3:4b")
     parser.add_argument("--base-url", help="for --provider openai, e.g. http://localhost:11434/v1")

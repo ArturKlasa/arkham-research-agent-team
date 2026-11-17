@@ -15,11 +15,15 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
+import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 class TransientError(Exception):
@@ -94,7 +98,7 @@ CLAUDE_ROLES = (
 def make_llm(cfg):
     """The backend for cfg.provider, or a Roster when models are set per role.
 
-    With provider=anthropic and no --model, CLAUDE_ROLES applies and cfg.roles overrides single roles of it.
+    With provider=anthropic or pi and no --model, CLAUDE_ROLES applies and cfg.roles overrides single roles of it.
     An explicit --model is the model for every role cfg.roles does not list. A role entry may name its own
     provider, "auditor=openai+gpt-oss:120b", so one role can run on another model family than the rest.
     """
@@ -102,15 +106,15 @@ def make_llm(cfg):
         from .demo import ScriptedTeam
 
         return ScriptedTeam()
-    backends = {"anthropic": AnthropicLLM, "openai": OpenAICompatLLM}
+    backends = {"anthropic": AnthropicLLM, "openai": OpenAICompatLLM, "pi": PiLLM}
     backend = backends.get(cfg.provider)
     if backend is None:
-        raise ValueError(f"unknown provider {cfg.provider!r} (use anthropic, openai or scripted)")
+        raise ValueError(f"unknown provider {cfg.provider!r} (use anthropic, openai, pi or scripted)")
     from dataclasses import replace
 
     from .experts import EXPERTS
 
-    spec = (CLAUDE_ROLES if cfg.provider == "anthropic" and not cfg.model else "") + "," + cfg.roles  # later entries win
+    spec = (CLAUDE_ROLES if cfg.provider in ("anthropic", "pi") and not cfg.model else "") + "," + cfg.roles  # later entries win
     by_role = {}
     for item in filter(None, (part.strip() for part in spec.split(","))):
         role, _, rest = item.partition("=")
@@ -210,6 +214,93 @@ class AnthropicLLM:
                     out.append({"role": "user", "content": [block]})
             elif m["role"] == "assistant":
                 out.append({"role": "assistant", "content": m.get("native") or m["content"]})
+            else:
+                out.append({"role": "user", "content": m["content"]})
+        return out
+
+
+class PiLLM:
+    """Any model pi knows, through pi-ai, the model layer of the pi agent toolkit, in a small Node bridge (pi/bridge.mjs).
+
+    Only the model connection is pi's. The agent loop, the tools, the hooks and the sandbox stay the harness's own:
+    pi-ai returns tool calls without running them. Set up once with `npm install --prefix pi` (Node 22.19+).
+    Models are named provider/model as in pi's catalogue; a bare name means an Anthropic model.
+    """
+
+    BRIDGE = ["node", str(Path(__file__).resolve().parent.parent / "pi" / "bridge.mjs")]
+    TIMEOUT = 900  # seconds for one call; pi's own HTTP timeout is shorter, this stops a bridge that hangs
+    PERMANENT = re.compile(r"\b(400|401|403|404|invalid|unauthori[sz]ed|authentication|forbidden|not.found|api.key|credit|no model)\b", re.I)
+
+    def __init__(self, cfg):
+        provider, slash, model = (cfg.model or "claude-opus-5-5").partition("/")
+        self.provider, self.model, self.effort = (provider, model, cfg.effort) if slash else ("anthropic", provider, cfg.effort)
+
+    def chat(self, system, messages, tools, on_text=None) -> Reply:
+        context = {"systemPrompt": system, "messages": self._messages(messages), "tools": [{"name": t.name, "description": t.description, "parameters": t.schema} for t in tools]}
+        request = json.dumps({"provider": self.provider, "model": self.model, "effort": self.effort, "context": context})
+        try:  # stderr joins stdout: one pipe cannot deadlock, and a line that is not JSON is the bridge's own failure
+            bridge = subprocess.Popen(self.BRIDGE, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+        except OSError as exc:
+            raise FatalError(f"cannot start the pi bridge (is Node installed?): {exc}") from exc
+        watchdog = threading.Timer(self.TIMEOUT, bridge.kill)
+        watchdog.start()
+        message, noise = None, []
+        try:
+            bridge.stdin.write(request)
+            bridge.stdin.close()
+            for line in bridge.stdout:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    event = {"error": line.strip()}
+                if "text" in event and on_text:
+                    on_text(event["text"])
+                message = event.get("message", message)
+                noise += [event["error"]] if event.get("error") else []
+            bridge.wait()
+        except BrokenPipeError:  # the bridge died before reading the request; what it printed says why
+            noise.append(bridge.stdout.read().strip())
+        finally:
+            watchdog.cancel()
+            bridge.kill()  # a no-op once it has exited; ends it when the turn was interrupted
+            bridge.wait()
+            bridge.stdout.close()
+        if message is None:
+            said = " ".join(noise)[-600:] or f"no reply (exit code {bridge.returncode})"
+            if "ERR_MODULE_NOT_FOUND" in said or "Cannot find package" in said:
+                raise FatalError("pi-ai is not installed: run `npm install --prefix pi`")
+            raise (FatalError if self.PERMANENT.search(said) else TransientError)(f"pi bridge: {said}")
+        if message.get("rawStopReason") == "refusal":
+            return Reply(stop="refusal", native=message)
+        if message["stopReason"] in ("error", "aborted"):
+            # pi reports a failed call as text, not as a status: what is clearly permanent is fatal, the rest is retried
+            said = message.get("errorMessage") or message["stopReason"]
+            raise (FatalError if self.PERMANENT.search(said) else TransientError)(f"pi: {said}")
+        calls = [b for b in message["content"] if b["type"] == "toolCall"]
+        usage = message["usage"]
+        return Reply(
+            text="".join(b["text"] for b in message["content"] if b["type"] == "text"),
+            # arguments that were not valid JSON arrive as {} with the reason beside them: pass the reason, so the loop rejects the call
+            tool_calls=[ToolCall(b["id"], b["name"], b.get("argumentsError") or b["arguments"]) for b in calls],
+            stop={"toolUse": "tool_use", "length": "max_tokens"}.get(message["stopReason"], "end"),
+            usage={"in": usage["input"] + usage.get("cacheRead", 0) + usage.get("cacheWrite", 0), "out": usage["output"]},
+            native=message,  # thinking blocks and signatures must go back unchanged
+        )
+
+    @staticmethod
+    def _messages(messages):
+        out, names = [], {}
+        for m in messages:
+            if m["role"] == "tool":  # pi wants the tool's name with its result
+                out.append({"role": "toolResult", "toolCallId": m["id"], "toolName": names.get(m["id"], ""), "content": [{"type": "text", "text": m["content"]}], "isError": m.get("is_error", False)})
+            elif m["role"] == "assistant":
+                names.update({c.id: c.name for c in m.get("tool_calls", [])})
+                native = m.get("native")
+                if not (isinstance(native, dict) and native.get("role") == "assistant"):  # not from pi: rebuild it from what the harness kept
+                    blocks = [{"type": "text", "text": m["content"]}] if m["content"] else []
+                    blocks += [{"type": "toolCall", "id": c.id, "name": c.name, "arguments": c.args} for c in m.get("tool_calls", [])]
+                    native = {"role": "assistant", "content": blocks or [{"type": "text", "text": "(no output)"}]}
+                out.append(native)
             else:
                 out.append({"role": "user", "content": m["content"]})
         return out

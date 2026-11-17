@@ -1,0 +1,9 @@
+{
+  "name": "harness-pi-bridge",
+  "private": true,
+  "type": "module",
+  "description": "Bridge from the harness to pi-ai, the model layer of the pi agent toolkit",
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.5.2"
+  }
+}
