@@ -61,13 +61,14 @@ def run_suite(eng) -> list[dict]:
     if code in (126, 127):  # the shell could not run the command at all: the spec chose it, the code is not at fault
         fix = "Make test_command a command that exists in the sandbox (Python standard library only), run from the workspace root."
         return [_finding(SUITE.id, "spec", f"`{command}` could not be run (exit code {code}):\n{output[-3000:]}", fix)]
-    if not tested and (code == 0 or "Ran 0 tests" in output):
-        # A suite that tests nothing proves nothing. The spec owns the command and the test layout; the test files may be at fault too.
+    named = {t.id for t in builders if any(re.search(r"(?<![\w-])" + re.escape(f), output) for f in t.meta["item"]["files"])}
+    if not tested and (code == 0 or "Ran 0 tests" in output or not named):
+        # A suite that tests nothing proves nothing, and one that stops before any test without naming a file (e.g.
+        # "No module named pytest") failed on its command. The spec owns the command and the test layout; the test files may be at fault too.
         evidence = f"`{command}` exited with code {code} without running a single test:\n{output[-3000:]}"
         fix = "Make test_command run the unittest suite from the workspace root, and make the test files discoverable by it (test*.py with TestCase classes)."
         owners = [t.id for t in builders if any("test" in f.rsplit("/", 1)[-1] for f in t.meta["item"]["files"])]
         return [_finding(SUITE.id, task_id, evidence, fix) for task_id in ["spec"] + owners]
-    named = {t.id for t in builders if any(re.search(r"(?<![\w-])" + re.escape(f), output) for f in t.meta["item"]["files"])}
     # A traceback names the test file, but the defect may be in code the test exercises: include everything the named items build on.
     blamed = named | {t.id for t in builders if eng.board.dependents(t.id) & named}
     evidence = f"`{command}` exited with code {code}:\n{output[-3000:]}"

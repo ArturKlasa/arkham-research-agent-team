@@ -205,9 +205,13 @@ class Pipeline(HarnessCase):
 
     def test_a_test_command_that_cannot_run_is_the_specs_fault(self):
         engine = self.team().engine
-        engine.board.add(Task("spec", "spec", "architect", status="done", result={"test_command": "no-such-runner tests"}))
         engine.board.add(Task("impl:a", "implement", "engineer", ["spec"], meta={"item": {"files": ["test_a.py"]}}))
-        self.assertEqual([f["task"] for f in auditor.run_suite(engine)], ["spec"])
+        for command, blamed in [
+            ("no-such-runner tests", ["spec"]),  # the shell cannot find it
+            ("echo 'No module named pytest' >&2; exit 1", ["spec", "impl:a"]),  # it starts, then stops before any test: not the engineers' code
+        ]:
+            engine.board.add(Task("spec", "spec", "architect", status="done", result={"test_command": command}))
+            self.assertEqual([f["task"] for f in auditor.run_suite(engine)], blamed, command)
 
     def test_every_error_is_listed_even_one_recorded_without_a_traceback(self):
         orch = self.team()
