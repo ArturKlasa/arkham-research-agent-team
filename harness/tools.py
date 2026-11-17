@@ -5,7 +5,7 @@ Three trust boundaries live here:
   sources directory (read-only);
 - commands run in a sandbox with no network, no home directory and no
   environment variables (so no API keys);
-- web fetches are limited to public http(s) addresses, and to URLs the agent was given rather than ones it composed.
+- web fetches are limited to public http(s) addresses, and to URLs the user typed or a search returned.
 """
 
 from __future__ import annotations
@@ -89,10 +89,7 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None,
         while last < len(lines) and (last == first or size + len(lines[last]) <= PAGE):  # at least one line, then up to a page
             size, last = size + len(lines[last]), last + 1
         more = f"\n… [lines {first + 1}-{last} of {len(lines)}; call again with offset={last + 1} for the rest]" if last < len(lines) else ""
-        text = "".join(lines[first:last])
-        if ws.name(target).startswith("sources/"):  # reference files come from the user; workspace files are written by agents
-            fetchable.update(urls(text))
-        return text + more or "(empty)"
+        return "".join(lines[first:last]) + more or "(empty)"
 
     def search_files(a):
         pattern, hits = re.compile(a["pattern"]), []
@@ -129,11 +126,12 @@ def make_tools(ws: Workspace, cfg, consulted: list, writable: set | None = None,
 
     def web_fetch(a):
         # Leaking data takes a URL the agent composed (https://evil.example/?d=<secret>). Such a URL never appears in
-        # the user's messages, a search result or a reference file, so only URLs from those are opened. URLs in fetched
-        # pages and workspace files do not count: either could be planted to spell out a secret one fetch at a time.
-        # ponytail: the choice among allowed URLs and the search query still carry a few bits; an egress proxy closes that.
+        # the user's messages or a search result, so only URLs from those are opened. URLs in files and fetched pages
+        # do not count, reference files included: a planted list (evil.example/0 ... /f) would spell out a secret one
+        # fetch at a time. ponytail: pages an attacker gets indexed can still form such a list through search, and the
+        # query itself goes to the search engine; an egress proxy with a per-task host allow-list closes both.
         if a["url"].split("#")[0] not in fetchable:
-            raise PermissionError(f"{a['url']} did not come from the user, a search result or a reference file; fetch URLs exactly as they appear there")
+            raise PermissionError(f"{a['url']} did not come from the user or a search result; search for the page, or ask the user to paste its URL")
         page = http_get(a["url"])
         consulted.append(a["url"])
         return clip(html_to_text(page) if "<html" in page[:2000].lower() or "<!doctype" in page[:200].lower() else page)
