@@ -1638,6 +1638,10 @@ class Gateway(HarnessCase):
             post("/chat", "wr\u00f6ng")
         self.assertEqual(denied.exception.code, 401)
         self.assertGreaterEqual(time.monotonic() - started, 2 * RETRY_DELAY)  # each wrong token costs a wait
+        for body in (b'{"message": 5}', b'{"message": null}', b"[]"):  # a malformed body is answered, not dropped
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                post("/chat", "secret", body)
+            self.assertEqual(rejected.exception.code, 400)
 
         midrun = []  # a slash command sent while the build holds the team is still answered
         orch.engine.bus.on(

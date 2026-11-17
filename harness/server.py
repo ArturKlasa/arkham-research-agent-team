@@ -57,8 +57,8 @@ PAGE = """<!doctype html>
 <script>
   const log = document.getElementById("log"), input = document.getElementById("message");
   let token = location.hash.slice(1) || sessionStorage.token ||
-    prompt("Access token (printed when the server started)");
-  sessionStorage.token = token;
+    prompt("Access token (printed when the server started)") || "";
+  if (token) sessionStorage.token = token;
   const auth = { Authorization: "Bearer " + token };
   function add(text, kind) {
     const span = document.createElement("span");
@@ -92,7 +92,9 @@ PAGE = """<!doctype html>
         cards.append(Object.assign(document.createElement("small"), { textContent }));
       }
     }
-    if (!response || response.status !== 401) setTimeout(poll, 1000);
+    if (!response || response.status !== 401) return setTimeout(poll, 1000);
+    delete sessionStorage.token;  // a wrong token is not kept: the next load asks again
+    add("Wrong access token: reload the page to enter it again.\\n", "error");
   }
   poll();
   document.getElementById("stop").onclick = () =>
@@ -179,6 +181,8 @@ def build(orchestrator, host: str, port: int, token: str, cert: str = "", key: s
                 return self.reply(404, "not found")
             try:
                 message = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))["message"]
+                if not isinstance(message, str):
+                    raise TypeError("message must be a string")
             except (ValueError, KeyError, TypeError):
                 return self.reply(400, 'expected a JSON body like {"message": "..."}')
             command = message.startswith("/")  # slash commands only read state: answer them even mid-run
