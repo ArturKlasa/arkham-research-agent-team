@@ -49,4 +49,8 @@ class Config:
             raw = os.environ.get(f"HARNESS_{f.name.upper()}")
             if raw is not None:
                 env[f.name] = (Path if f.default is None else type(f.default))(raw)
-        return cls(**{**env, **explicit})
+        cfg = cls(**{**env, **explicit})
+        if cfg.provider == "scripted" and "memory" not in {**env, **explicit}:
+            # the scripted team's planted mistakes and canned briefs must never become lessons for real models
+            cfg.memory = Path("memory/scripted.jsonl")
+        return cfg

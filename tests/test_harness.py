@@ -689,6 +689,12 @@ class Boundaries(HarnessCase):
             cfg = Config.load(provider="anthropic")
         self.assertEqual((cfg.provider, cfg.max_turns, cfg.max_attempts), ("anthropic", 7, 3))
 
+    def test_the_scripted_team_keeps_its_own_memory_unless_one_is_chosen(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(Config.load().memory, Path("memory/memory.jsonl"))
+            self.assertEqual(Config.load(provider="scripted").memory, Path("memory/scripted.jsonl"))
+            self.assertEqual(Config.load(provider="scripted", memory=Path("m.jsonl")).memory, Path("m.jsonl"))
+
     def test_each_role_talks_to_its_own_model_and_unlisted_roles_use_the_default(self):
         team, used = ScriptedTeam(faults=False), set()
 

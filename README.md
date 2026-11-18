@@ -35,7 +35,7 @@ Then type what you want built. Other entry points and options:
 .venv/bin/python -m harness --session 20261114-101500     # reopen a session: its board, trail and workspace
 .venv/bin/python -m harness --hooks examples/hooks.py     # load policy hooks
 .venv/bin/python -m harness --pause-after prd             # stop after the PRD for your review; `resume` (or a change request) continues
-.venv/bin/python -m unittest discover -s tests -v         # 85 tests, offline, about 14 seconds
+.venv/bin/python -m unittest discover -s tests -v         # 86 tests, offline, about 14 seconds
 ```
 
 Requirements: Linux or macOS (the memory file is locked with `fcntl`, so Windows needs WSL), Python 3.10+, and `bubblewrap` or Docker for the code sandbox (Node is needed only for `--provider pi`) (Linux has `bwrap` in every distribution; with Docker the image `python:3.12-slim` is pulled on first use). For local models, raise Ollama's context window first (its default is small): `OLLAMA_CONTEXT_LENGTH=32768 ollama serve`.
@@ -235,7 +235,7 @@ runs/<session>/artifacts/      research.md, plan.md, prd.md, spec.md, impl-W1.md
 runs/<session>/workspace/      the solution that was built
 ```
 
-Lessons and notes live in `memory/memory.jsonl`, shared by every session. The scripted team stops making a mistake once its lesson is there, so to watch it make every mistake again, start from an empty memory: `HARNESS_MEMORY=/tmp/demo/memory.jsonl` (or delete `memory/`).
+Lessons and notes live in `memory/memory.jsonl`, shared by every session. The scripted team keeps its own, `memory/scripted.jsonl`, so its planted mistakes and canned research never reach real models. It stops making a mistake once its lesson is there, so to watch it make every mistake again, start from an empty memory: `HARNESS_MEMORY=/tmp/demo/memory.jsonl` (or delete `memory/scripted.jsonl`).
 
 Every setting in `harness/config.py` can be set as `HARNESS_<NAME>` (for example `HARNESS_MAX_AUDIT_CYCLES=1`, `HARNESS_RUNS=/tmp/runs`); command-line flags beat the environment, which beats the defaults. `--sandbox none` runs generated code on the host without isolation and is meant only for machines with neither bubblewrap nor Docker.
 

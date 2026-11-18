@@ -9,6 +9,7 @@ direct, dependable inspection of what was built.
 from __future__ import annotations
 
 import json
+import textwrap
 import time
 import traceback
 from pathlib import Path
@@ -207,7 +208,8 @@ class Orchestrator:
         if name == "/memory":
             return (
                 "\n".join(
-                    f"{m['kind']:<8} {m['role']:<10} x{m['hits']} {m['key']} {m['text'][:160]}" for m in e.memory.items
+                    f"{m['kind']:<8} {m['role']:<10} x{m['hits']} {m['key']} {textwrap.shorten(m['text'], 200)}"
+                    for m in e.memory.items
                 )
                 or "(empty)"
             )
