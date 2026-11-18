@@ -4,7 +4,7 @@ A 35-minute live walkthrough that shows each requirement of the brief. All comma
 with `ANTHROPIC_API_KEY` set. Browser zoom 125–150%. Two terminals: **T1** (server), **T2** (side demos).
 
 ## Before the call (10 min)
-- [ ] Clean tree, `.venv/bin/python -m unittest discover -s tests -q` → 85 OK
+- [ ] Clean tree, `.venv/bin/python -m unittest discover -s tests -q` → 86 OK
 - [ ] Fallback session ready (a finished real build under `runs/`, e.g. `20261117-154244`). If the API fails live:
       `.venv/bin/python -m harness --serve --session 20261117-154244`
 - [ ] Empty scripted memory so the scripted team makes every mistake: `rm -rf /tmp/demo`
