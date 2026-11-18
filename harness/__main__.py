@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .config import Config
+from .engine import PIPELINE, pause_steps
 from .events import Event, render
 from .orchestrator import HELP, Orchestrator
 
@@ -79,6 +80,10 @@ def main() -> None:
     cfg = Config.load(**chosen)
     if args.session and not (Path(cfg.runs) / args.session).is_dir():  # a mistyped id must not start an empty one
         parser.error(f"no session {args.session} under {cfg.runs}")
+    known = {step for step, _, _ in PIPELINE}
+    if unknown := sorted(s for s in pause_steps(cfg.pause_after) if s not in known and not s.startswith("impl:")):
+        # a mistyped step would never pause, and the run would pay for the work the user meant to review first
+        parser.error(f"--pause-after: unknown step {', '.join(unknown)}; steps: research, plan, prd, spec, impl:<id>")
     orchestrator = Orchestrator(cfg, args.session)
     if args.hooks:
         load_hooks(args.hooks, orchestrator.engine.bus)

@@ -391,7 +391,7 @@ class Pipeline(HarnessCase):
         self.assertTrue(orch.engine.approve()["accepted_by_user"])
 
     def test_the_run_can_stop_after_a_step_for_the_users_review(self):
-        engine = self.team(faults=False, pause_after="prd").engine
+        engine = self.team(faults=False, pause_after=" PRD ,").engine  # spaces and case as a user may type them
         report = engine.start(TASK)
         self.assertEqual(report["status"], "paused after prd for review (resume continues)")
         self.assertEqual([t["status"] for t in report["tasks"]], ["done", "done", "done", "pending", "pending"])
@@ -761,6 +761,15 @@ class Boundaries(HarnessCase):
         self.assertEqual(done.returncode, 2)
         self.assertIn("no session 20261117-12000", done.stderr)
         self.assertFalse((runs / "20261117-12000").exists())
+
+    def test_a_mistyped_pause_step_is_refused_before_the_run_starts(self):
+        done = subprocess.run(
+            [sys.executable, "-m", "harness", "--provider", "scripted", "--pause-after", "prd,pdr"],
+            env={**os.environ, "HARNESS_RUNS": str(self.tmp / "fresh-runs")}, capture_output=True, text=True,
+            timeout=60,
+        )
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("unknown step pdr", done.stderr)
 
     def test_a_torn_line_in_memory_or_trail_does_not_stop_a_session(self):
         orch = self.team(faults=False)

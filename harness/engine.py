@@ -43,6 +43,11 @@ PIPELINE = [
 ]
 
 
+def pause_steps(text: str) -> set[str]:
+    """The step ids in a --pause-after value, forgiving of spaces and case ("PRD, spec")."""
+    return {step.strip().lower() for step in text.split(",") if step.strip()}
+
+
 class Engine:
     def __init__(self, cfg, llm, run_dir: Path):
         self.cfg, self.llm, self.dir = cfg, llm, Path(run_dir)
@@ -69,7 +74,7 @@ class Engine:
         while task := self.board.ready():
             self.execute(task)
             # the user reviews before the costlier steps
-            if task.status == "done" and task.id in self.cfg.pause_after.split(","):
+            if task.status == "done" and task.id.lower() in pause_steps(self.cfg.pause_after):
                 self.board.meta["paused_after"] = task.id
                 self.board.save()
                 break
