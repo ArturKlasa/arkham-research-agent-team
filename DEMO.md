@@ -5,7 +5,7 @@ with `ANTHROPIC_API_KEY` set. Browser zoom 125–150%. Two terminals: **T1** (ma
 `HARNESS_TOKEN=demo` keeps the web link the same across restarts: `http://localhost:8765/#demo`.
 
 ## Before the call (10 min)
-- [ ] Clean tree, `.venv/bin/python -m unittest discover -s tests -q` → 87 OK
+- [ ] Clean tree, `.venv/bin/python -m unittest discover -s tests -q` → 86 OK
 - [ ] Fallback session ready: `20261117-184352`, a finished real build of the todo app below (it ended with one
       open audit finding, which makes a ready-made change request). If the API fails live:
       `HARNESS_TOKEN=demo .venv/bin/python -m harness --serve --session 20261117-184352`
