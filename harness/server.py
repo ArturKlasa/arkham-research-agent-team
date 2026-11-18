@@ -37,23 +37,40 @@ PAGE = """<!doctype html>
   .card { border-left: 4px solid #555; background: #1a1a1a; border-radius: 4px; padding: 6px 10px; margin-bottom: 6px; }
   .card { cursor: pointer; }
   .card b { font-family: ui-monospace, monospace; } .card small { display: block; color: #999; }
+  #legend { margin: 0 0 10px; color: #999; font-size: 12px; }
+  .key { display: inline-block; border-left: 4px solid #555; padding: 0 6px 0 4px; margin: 0 2px 4px 0; }
   .running { border-color: #58a6ff; animation: pulse 1.2s infinite; } .done { border-color: #3fb950; }
   .failed { border-color: #ff7b72; } .reopened { border-color: #d29922; } .retrying { border-color: #db6d28; }
   @keyframes pulse { 50% { background: #1d2a3a; } }
+  #legend .running { animation: none; }
   @media (max-width: 760px) { body { grid-template-columns: 1fr; } #board { position: static; order: -1; } }
   #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 13px; min-height: 60vh; }
   .you { color: #7cc4ff; } .event { color: #888; } .error { color: #ff7b72; }
-  form { display: flex; gap: 8px; position: sticky; bottom: 0; background: #111; padding: 12px 0; }
+  .bad { color: #ff7b72; } .retry { color: #db6d28; } .audit { color: #d29922; } .ok { color: #3fb950; }
+  .run { color: #58a6ff; } .lesson { color: #bc8cff; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; position: sticky; bottom: 0; background: #111; padding: 12px 0; }
+  #quick { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+  #quick button { padding: 3px 10px; font-size: 13px; font-family: ui-monospace, monospace; }
   input, button { color: #eee; border-radius: 6px; font: inherit; }
   input { flex: 1; padding: 10px; background: #1c1c1c; border: 1px solid #333; }
   button { padding: 10px 14px; background: #2a2a2a; border: 1px solid #444; cursor: pointer; }
 </style>
 <main><div id="log"></div>
 <form id="form">
+  <div id="quick">
+    <button type="button">/status</button> <button type="button">/show</button> <button type="button">/errors</button>
+    <button type="button">/memory</button> <button type="button">/help</button>
+  </div>
   <input id="message" placeholder="Describe what to build, ask a question, or type /help" autofocus autocomplete="off">
   <button>Send</button><button type="button" id="stop">Stop</button>
 </form></main>
-<aside id="board"><h2>Task board</h2><div id="cards">no project yet</div></aside>
+<aside id="board"><h2>Task board</h2>
+<div id="legend">
+  <span class="key">pending</span> <span class="key running">running</span> <span class="key retrying">retrying</span>
+  <span class="key reopened">re-opened by the audit</span> <span class="key done">done</span>
+  <span class="key failed">failed</span>
+</div>
+<div id="cards">no project yet</div></aside>
 <script>
   const log = document.getElementById("log"), input = document.getElementById("message");
   let token = location.hash.slice(1) || sessionStorage.token ||
@@ -64,7 +81,20 @@ PAGE = """<!doctype html>
     const span = document.createElement("span");
     span.className = kind; span.textContent = text;  // textContent: model output is never parsed as HTML
     log.append(span); window.scrollTo(0, document.body.scrollHeight);
+    if (text) midline = !text.endsWith("\\n");
   }
+  let midline = false;  // progress lines start on a fresh line, without leaving blank ones between them
+  // A progress line is coloured by its leading mark, so failures and recoveries stand out from routine steps.
+  const MARKS = { "✖": "bad", "↻": "retry", "↺": "retry", "!": "retry", "⚖": "audit", "→": "audit", "⏸": "audit",
+                  "✔": "ok", "▶": "run", "✎": "lesson" };
+  function addEvent(text) {
+    if (midline) add("\\n", "event");
+    for (const line of text.split("\\n")) {
+      const kind = line.includes("all rules pass") ? "ok" : MARKS[line.trim()[0]] || "";
+      add(line + "\\n", "event " + kind);
+    }
+  }
+  document.querySelectorAll("#quick button").forEach(button => button.onclick = () => send(button.textContent));
   // The board: polled from /status, so it shows delegation, retries and audit re-runs as they happen.
   const cards = document.getElementById("cards");
   // a pending task that already ran was sent back: by a failure (retrying) or by the audit (re-opened)
@@ -115,7 +145,8 @@ PAGE = """<!doctype html>
       const frames = buffer.split("\\n\\n"); buffer = frames.pop();
       for (const frame of frames) {
         const item = JSON.parse(frame.slice(6));
-        add(item.type === "text" ? item.text : "\\n" + item.text + "\\n", item.type);
+        if (item.type === "event") addEvent(item.text);
+        else add(item.type === "text" ? item.text : "\\n" + item.text + "\\n", item.type);
       }
     }
   }
